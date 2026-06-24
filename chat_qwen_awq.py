@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import sys
 import threading
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+
+try:
+    from transformers import AwqConfig
+except ImportError:
+    AwqConfig = None
 
 from kvcache import budgeted_kv_cache
 
@@ -21,6 +27,7 @@ def load_model(
     max_gpu_memory: str,
     max_cpu_memory: str,
     offload_folder: Path,
+    awq_version: str,
 ):
     torch_dtype = {
         "auto": "auto",
@@ -41,17 +48,42 @@ def load_model(
         if max_cpu_memory:
             max_memory["cpu"] = max_cpu_memory
     offload_folder.mkdir(parents=True, exist_ok=True)
+    quantization_config = None
+    if awq_version:
+        if AwqConfig is None:
+            raise RuntimeError("this transformers version does not expose AwqConfig")
+        model_config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        raw_quantization_config = getattr(model_config, "quantization_config", None)
+        if isinstance(raw_quantization_config, dict):
+            raw_quantization_config = dict(raw_quantization_config)
+            raw_quantization_config["version"] = awq_version
+            raw_quantization_config.pop("quant_method", None)
+            try:
+                quantization_config = AwqConfig(**raw_quantization_config)
+            except TypeError:
+                quantization_config = AwqConfig(version=awq_version)
+        else:
+            quantization_config = AwqConfig(version=awq_version)
+        print(f"using AWQ kernel version: {awq_version}", flush=True)
+    model_kwargs = {
+        "dtype": torch_dtype,
+        "device_map": device_map,
+        "max_memory": max_memory,
+        "offload_folder": str(offload_folder),
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
+    }
+    if quantization_config is not None:
+        model_kwargs["quantization_config"] = quantization_config
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        dtype=torch_dtype,
-        device_map=device_map,
-        max_memory=max_memory,
-        offload_folder=str(offload_folder),
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
+        **model_kwargs,
     )
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return model, tokenizer
 
 
@@ -215,6 +247,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-gpu-memory", default="22GiB")
     parser.add_argument("--max-cpu-memory", default="")
     parser.add_argument("--offload-folder", type=Path, default=Path("/root/autodl-tmp/offload"))
+    parser.add_argument("--awq-version", choices=["", "gemm", "gemv", "exllama"], default="")
     parser.add_argument("--system", default="You are a helpful assistant.")
     parser.add_argument("--history-file", type=Path)
     parser.add_argument("--fresh-start", action="store_true")
@@ -248,6 +281,7 @@ def main() -> None:
         max_gpu_memory=args.max_gpu_memory,
         max_cpu_memory=args.max_cpu_memory,
         offload_folder=args.offload_folder,
+        awq_version=args.awq_version,
     )
 
     if args.history_file and args.history_file.exists() and not args.fresh_start:
