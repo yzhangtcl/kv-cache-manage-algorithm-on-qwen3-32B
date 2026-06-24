@@ -119,9 +119,11 @@ def generate_reply(
     kv_log_every: int,
 ) -> str:
     input_ids = render_messages(tokenizer, messages, enable_thinking).to(model.device)
+    attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)
     if use_kvcache:
         generation_kwargs = {
             "input_ids": input_ids,
+            "attention_mask": attention_mask,
             "max_new_tokens": max_new_tokens,
             "do_sample": temperature > 0,
             "temperature": temperature if temperature > 0 else None,
@@ -164,6 +166,7 @@ def generate_reply(
 
     generation_kwargs = {
         "input_ids": input_ids,
+        "attention_mask": attention_mask,
         "max_new_tokens": max_new_tokens,
         "do_sample": temperature > 0,
         "temperature": temperature if temperature > 0 else None,
