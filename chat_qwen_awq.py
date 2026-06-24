@@ -217,6 +217,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--offload-folder", type=Path, default=Path("/root/autodl-tmp/offload"))
     parser.add_argument("--system", default="You are a helpful assistant.")
     parser.add_argument("--history-file", type=Path)
+    parser.add_argument("--fresh-start", action="store_true")
     parser.add_argument("--max-input-tokens", type=int, default=24000)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0.6)
@@ -249,7 +250,7 @@ def main() -> None:
         offload_folder=args.offload_folder,
     )
 
-    if args.history_file and args.history_file.exists():
+    if args.history_file and args.history_file.exists() and not args.fresh_start:
         messages = load_history(args.history_file)
     else:
         messages = [{"role": "system", "content": args.system}]
