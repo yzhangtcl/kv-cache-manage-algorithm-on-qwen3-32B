@@ -20,7 +20,7 @@ python3 batch_qa_eval.py \
   --dataset datasets/reliability_speed.jsonl \
   --dtype auto \
   --mode both \
-  --max-gpu-memory 20GiB \
+  --max-gpu-memory 18GiB \
   --max-cpu-memory "" \
   --offload-folder /root/autodl-tmp/offload \
   --prefill-chunk-tokens 4096 \
