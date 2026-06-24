@@ -18,3 +18,5 @@ python3 chat_qwen_awq.py \
   --attention-decay 0.995 \
   --importance-update 0.02 \
   --history-file /root/autodl-tmp/kvcache_outputs/chat_history.json
+
+  
