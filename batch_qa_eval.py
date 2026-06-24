@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from llm_kvcache import generate_with_budgeted_kv
+from kvcache import generate_with_budgeted_kv
 
 
 def normalize(text: str) -> str:
