@@ -120,6 +120,12 @@ def generate_reply(
 ) -> str:
     input_ids = render_messages(tokenizer, messages, enable_thinking).to(model.device)
     if use_kvcache:
+        chunks: list[str] = []
+
+        def stream_chunk(chunk: str) -> None:
+            print(chunk, end="", flush=True)
+            chunks.append(chunk)
+
         result = generate_with_budgeted_kv_from_input_ids(
             model=model,
             tokenizer=tokenizer,
@@ -140,10 +146,11 @@ def generate_reply(
             top_p=top_p,
             greedy=temperature <= 0,
             repetition_penalty=repetition_penalty,
+            stream_callback=stream_chunk if stream else None,
         )
         reply = result.text.strip()
         if stream:
-            print(reply, flush=True)
+            print()
         return reply
 
     generation_kwargs = {
