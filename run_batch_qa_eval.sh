@@ -18,3 +18,4 @@ python3 batch_qa_eval.py \
   --importance-update 0 \
   --output-csv /root/autodl-tmp/kvcache_outputs/awq_32b_qa.csv \
   --artifacts-dir /root/autodl-tmp/kvcache_outputs/awq_32b_qa
+
