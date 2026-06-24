@@ -1,0 +1,15 @@
+[case 1/15] short_qa_earth_seasons ok=True running_acc=100.00% case_time=2.3s total_time=2.4s
+[case 2/15] short_qa_photosynthesis ok=True running_acc=100.00% case_time=2.6s total_time=5.0s
+[case 3/15] short_qa_http_404 ok=True running_acc=100.00% case_time=1.3s total_time=6.2s
+[case 4/15] short_qa_overfitting ok=True running_acc=100.00% case_time=2.9s total_time=9.2s
+[case 5/15] reasoning_boxes ok=True running_acc=100.00% case_time=7.5s total_time=16.7s
+[case 6/15] reasoning_train ok=True running_acc=100.00% case_time=15.9s total_time=32.7s
+[case 7/15] reasoning_apples ok=True running_acc=100.00% case_time=5.1s total_time=37.8s
+[case 8/15] reasoning_schedule ok=True running_acc=100.00% case_time=9.9s total_time=47.7s
+[case 9/15] long_qa_tradeoffs ok=True running_acc=100.00% case_time=9.7s total_time=57.3s
+[case 10/15] long_qa_eval_types ok=True running_acc=100.00% case_time=5.7s total_time=63.0s
+[case 11/15] long_qa_hot_cache ok=True running_acc=100.00% case_time=7.8s total_time=70.8s
+[case 12/15] recall_atlas ok=True running_acc=100.00% case_time=3.5s total_time=74.4s
+[case 13/15] recall_borealis ok=True running_acc=100.00% case_time=3.7s total_time=78.1s
+[case 14/15] recall_cygnus ok=True running_acc=100.00% case_time=3.9s total_time=82.0s
+[case 15/15] recall_dione ok=True running_acc=100.00% case_time=3.7s total_time=85.7s
