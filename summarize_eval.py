@@ -20,6 +20,14 @@ def load_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(fh))
 
 
+def data_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        row
+        for row in rows
+        if row.get("category") != "summary" and not row.get("id", "").startswith("__summary_")
+    ]
+
+
 def mode_stats(rows: list[dict[str, str]]) -> dict[str, dict[str, int]]:
     stats: dict[str, Counter] = defaultdict(Counter)
     sums: dict[str, Counter] = defaultdict(Counter)
@@ -84,7 +92,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    rows = load_rows(args.csv_path)
+    all_rows = load_rows(args.csv_path)
+    rows = data_rows(all_rows)
     by_case: dict[str, dict[str, dict[str, str]]] = defaultdict(dict)
     for row in rows:
         by_case[row["id"]][row.get("mode") or "kvmanage"] = row

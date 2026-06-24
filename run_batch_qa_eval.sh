@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python3 make_reliability_datasets.py
+SPEED_CASES="${SPEED_CASES:-10}"
+OOM_CASES="${OOM_CASES:-100}"
+SPEED_REPEATS="${SPEED_REPEATS:-220}"
+OOM_REPEATS="${OOM_REPEATS:-360}"
 
 OUTPUT_CSV=/root/autodl-tmp/kvcache_outputs/reliability_speed.csv
 rm -f "$OUTPUT_CSV"
+
+python3 make_reliability_datasets.py \
+  --speed-cases "$SPEED_CASES" \
+  --speed-repeats "$SPEED_REPEATS" \
+  --oom-cases "$OOM_CASES" \
+  --oom-repeats "$OOM_REPEATS"
 
 python3 batch_qa_eval.py \
   --model Qwen/Qwen3-32B-AWQ \

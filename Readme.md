@@ -44,6 +44,13 @@ OOM 压力评测：
 ./run_oom_eval.sh
 ```
 
+修改测试组数：
+
+```bash
+SPEED_CASES=10 ./run_batch_qa_eval.sh
+OOM_CASES=100 ./run_oom_eval.sh
+```
+
 ## 实验建议
 
 先运行 `python3 make_reliability_datasets.py` 生成：
@@ -59,6 +66,8 @@ OOM 压力评测：
 - `avg_kept_cache_tokens`、`dropped_tokens_total`、`merged_tokens_total`：kvmanage 的压缩统计。
 
 `summarize_eval.py` 会按 `mode` 分开统计 accuracy、平均耗时、平均峰值显存、OOM 数和 error 数，避免把 full KV 的 OOM 与 kvmanage 的正确率混在一起。
+
+`batch_qa_eval.py` 默认会在 CSV 末尾追加两行 summary：`__summary_full__` 和 `__summary_kvmanage__`。summary 行中 `ok` 是该方法 accuracy，`elapsed_sec`、`peak_memory_gb`、`prompt_tokens` 等数值列是该方法在 `status=ok` 样本上的均值。
 
 汇总结果：
 

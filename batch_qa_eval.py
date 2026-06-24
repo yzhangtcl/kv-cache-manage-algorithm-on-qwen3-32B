@@ -38,6 +38,8 @@ def existing_runs(path: Path) -> set[tuple[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as fh:
         completed = set()
         for row in csv.DictReader(fh):
+            if row.get("category") == "summary" or row.get("id", "").startswith("__summary_"):
+                continue
             mode = row.get("mode") or "kvmanage"
             completed.add((row["id"], mode))
         return completed
@@ -52,6 +54,85 @@ def append_row(path: Path, row: dict[str, str]) -> None:
             writer.writeheader()
         writer.writerow(row)
         fh.flush()
+
+
+def append_summary_rows(path: Path, rows: list[dict[str, str]]) -> None:
+    if not rows:
+        return
+    fieldnames = list(rows[0].keys())
+    summaries = build_summary_rows(rows, fieldnames)
+    if not summaries:
+        return
+    with path.open("a", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        for row in summaries:
+            writer.writerow(row)
+        fh.flush()
+
+
+def to_float(value: str) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def avg(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def build_summary_rows(rows: list[dict[str, str]], fieldnames: list[str]) -> list[dict[str, str]]:
+    summaries = []
+    modes = sorted({row.get("mode", "") for row in rows if row.get("mode")})
+    for mode in modes:
+        mode_rows = [row for row in rows if row.get("mode") == mode]
+        ok_rows = [row for row in mode_rows if row.get("status") == "ok"]
+        correct = sum(1 for row in ok_rows if row.get("ok") == "True")
+        elapsed = [value for row in ok_rows if (value := to_float(row.get("elapsed_sec", ""))) is not None]
+        memory = [
+            value for row in ok_rows if (value := to_float(row.get("peak_memory_gb", ""))) is not None
+        ]
+        generated = [
+            value for row in ok_rows if (value := to_float(row.get("generated_tokens", ""))) is not None
+        ]
+        prompt_tokens = [
+            value for row in ok_rows if (value := to_float(row.get("prompt_tokens", ""))) is not None
+        ]
+        kept = [
+            value for row in ok_rows if (value := to_float(row.get("avg_kept_cache_tokens", ""))) is not None
+        ]
+        dropped = [
+            value for row in ok_rows if (value := to_float(row.get("dropped_tokens_total", ""))) is not None
+        ]
+        merged = [
+            value for row in ok_rows if (value := to_float(row.get("merged_tokens_total", ""))) is not None
+        ]
+        oom_count = sum(1 for row in mode_rows if row.get("status") == "oom")
+        error_count = sum(1 for row in mode_rows if row.get("status") == "error")
+        summary = {field: "" for field in fieldnames}
+        summary.update(
+            {
+                "id": f"__summary_{mode}__",
+                "mode": mode,
+                "category": "summary",
+                "status": "summary",
+                "ok": f"{correct / len(ok_rows):.4f}" if ok_rows else "0.0000",
+                "score_type": "mean",
+                "keyword_hits": str(correct),
+                "keyword_required": str(len(ok_rows)),
+                "prompt_tokens": f"{avg(prompt_tokens):.1f}",
+                "generated_tokens": f"{avg(generated):.1f}",
+                "elapsed_sec": f"{avg(elapsed):.2f}",
+                "peak_memory_gb": f"{avg(memory):.2f}",
+                "avg_kept_cache_tokens": f"{avg(kept):.1f}",
+                "dropped_tokens_total": f"{avg(dropped):.1f}",
+                "merged_tokens_total": f"{avg(merged):.1f}",
+                "error": f"rows={len(mode_rows)} scored={len(ok_rows)} oom={oom_count} error={error_count}",
+                "output": "summary row: ok is accuracy; numeric columns are means over status=ok rows",
+            }
+        )
+        summaries.append(summary)
+    return summaries
 
 
 def save_artifacts(path: Path | None, case_id: str, mode: str, prompt: str, output: str) -> None:
@@ -184,6 +265,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Record non-OOM exceptions as failed rows instead of aborting.",
     )
+    parser.add_argument(
+        "--no-csv-summary",
+        action="store_true",
+        help="Do not append per-mode summary rows to the end of the output CSV.",
+    )
     return parser.parse_args()
 
 
@@ -286,6 +372,7 @@ def main() -> None:
 
     mode_correct = {mode: 0 for mode in modes}
     mode_scored = {mode: 0 for mode in modes}
+    written_rows: list[dict[str, str]] = []
     started = time.perf_counter()
     for idx, case in enumerate(cases):
         case_id = str(case["id"])
@@ -319,20 +406,19 @@ def main() -> None:
             if status == "ok":
                 mode_correct[mode] += int(ok)
                 mode_scored[mode] += 1
-            append_row(
-                args.output_csv,
-                result_row(
-                    case=case,
-                    mode=mode,
-                    status=status,
-                    ok=ok,
-                    score_type=score_type,
-                    hits=hits,
-                    required=required,
-                    result=result,
-                    error=error,
-                ),
+            row = result_row(
+                case=case,
+                mode=mode,
+                status=status,
+                ok=ok,
+                score_type=score_type,
+                hits=hits,
+                required=required,
+                result=result,
+                error=error,
             )
+            append_row(args.output_csv, row)
+            written_rows.append(row)
             total_elapsed = time.perf_counter() - started
             case_time = result.elapsed_sec if result is not None else 0.0
             print(
@@ -344,6 +430,8 @@ def main() -> None:
             )
             clear_cuda_state()
 
+    if not args.no_csv_summary:
+        append_summary_rows(args.output_csv, written_rows)
     print(f"wrote {args.output_csv}", flush=True)
 
 

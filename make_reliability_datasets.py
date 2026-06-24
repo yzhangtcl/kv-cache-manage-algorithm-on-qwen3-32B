@@ -79,44 +79,50 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create repeated-fact reliability datasets.")
     parser.add_argument("--output-dir", type=Path, default=Path("datasets"))
+    parser.add_argument("--speed-cases", type=int, default=10)
     parser.add_argument(
         "--speed-repeats",
         type=int,
         default=220,
-        help="Base repeat count for 8k-ish speed cases; script also creates longer variants.",
+        help="Base repeat count for 8k-ish speed cases; later cases get longer contexts.",
     )
     parser.add_argument("--oom-repeats", type=int, default=360)
-    parser.add_argument("--oom-cases", type=int, default=3)
+    parser.add_argument("--oom-cases", type=int, default=100)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     speed_rows = []
-    for suffix, extra_repeats in [("8k", 0), ("10k", 70), ("12k", 140)]:
-        repeats = args.speed_repeats + extra_repeats
-        speed_rows.extend(
-            [
+    for case_idx in range(args.speed_cases):
+        level = case_idx % 3
+        family_idx = case_idx // 3
+        suffix = ["8k", "10k", "12k"][level]
+        repeats = args.speed_repeats + level * 70 + family_idx * 8
+        if case_idx % 2 == 0:
+            speed_rows.append(
                 {
-                    "id": f"speed_policy_summary_{suffix}",
+                    "id": f"speed_policy_summary_{case_idx + 1:03d}_{suffix}",
                     "category": "speed_long",
-                    "prompt": repeated_policy_prompt(repeats, label=suffix),
+                    "prompt": repeated_policy_prompt(repeats, label=f"{suffix}_{case_idx + 1:03d}"),
                     "expected_keywords": ["recent", "hot", "cold", "merged", "risk"],
                     "min_keyword_hits": 4,
                     "max_new_tokens": 160,
                     "stop_after_sentences": 0,
-                },
+                }
+            )
+        else:
+            speed_rows.append(
                 {
-                    "id": f"speed_ops_summary_{suffix}",
+                    "id": f"speed_ops_summary_{case_idx + 1:03d}_{suffix}",
                     "category": "speed_long",
-                    "prompt": repeated_ops_prompt(repeats, label=suffix),
+                    "prompt": repeated_ops_prompt(repeats, label=f"{suffix}_{case_idx + 1:03d}"),
                     "expected_keywords": ["Atlas", "113", "Cygnus", "389", "Dione", "431"],
                     "min_keyword_hits": 5,
                     "max_new_tokens": 160,
                     "stop_after_sentences": 0,
-                },
-            ]
-        )
+                }
+            )
 
     oom_rows = []
     for case_idx in range(args.oom_cases):
