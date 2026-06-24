@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from kvcache import budgeted_kv_cache
+from kvcache import budgeted_kv_cache, generate_with_budgeted_kv_from_input_ids
 
 
 def load_model(
@@ -151,9 +151,43 @@ def generate_reply(
     attention_decay: float,
     importance_update: float,
     kv_log_every: int,
+    generation_backend: str,
 ) -> str:
     input_ids = render_messages(tokenizer, messages, enable_thinking).to(model.device)
     attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=input_ids.device)
+    if use_kvcache and generation_backend == "chunked-kv":
+        chunks: list[str] = []
+
+        def stream_chunk(chunk: str) -> None:
+            print(chunk, end="", flush=True)
+            chunks.append(chunk)
+
+        result = generate_with_budgeted_kv_from_input_ids(
+            model=model,
+            tokenizer=tokenizer,
+            input_ids=input_ids,
+            max_new_tokens=max_new_tokens,
+            prefill_chunk_tokens=prefill_chunk_tokens,
+            max_cache_tokens=max_cache_tokens,
+            recent_window=recent_window,
+            hot_cache_tokens=hot_cache_tokens,
+            hot_raw_tokens=hot_raw_tokens,
+            merge_similarity=merge_similarity,
+            attention_decay=attention_decay,
+            importance_update=importance_update,
+            log_every=kv_log_every,
+            stop_after_regex="",
+            stop_after_sentences=0,
+            temperature=temperature,
+            top_p=top_p,
+            greedy=temperature <= 0,
+            repetition_penalty=repetition_penalty,
+            stream_callback=stream_chunk if stream else None,
+        )
+        if stream:
+            print()
+        return result.text.strip()
+
     if use_kvcache:
         generation_kwargs = {
             "input_ids": input_ids,
@@ -266,6 +300,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-thinking", action="store_true")
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--use-kvcache", action="store_true")
+    parser.add_argument("--generation-backend", choices=["generate", "chunked-kv"], default="generate")
     parser.add_argument("--prefill-chunk-tokens", type=int, default=256)
     parser.add_argument("--max-cache-tokens", type=int, default=2048)
     parser.add_argument("--recent-window", type=int, default=1024)
@@ -347,6 +382,7 @@ def main() -> None:
             attention_decay=args.attention_decay,
             importance_update=args.importance_update,
             kv_log_every=args.kv_log_every,
+            generation_backend=args.generation_backend,
         )
         if args.no_stream:
             print(reply)
