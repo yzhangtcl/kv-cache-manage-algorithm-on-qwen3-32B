@@ -10,6 +10,7 @@ python3 chat_qwen_awq.py \
   --max-gpu-memory 16GiB \
   --max-cpu-memory 110GiB \
   --awq-version gemm \
+  --awq-backend torch_awq \
   --fresh-start \
   --max-input-tokens 0 \
   --max-new-tokens 4096 \

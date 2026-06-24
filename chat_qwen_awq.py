@@ -23,6 +23,7 @@ def load_model(
     max_cpu_memory: str,
     offload_folder: Path,
     awq_version: str,
+    awq_backend: str,
 ):
     torch_dtype = {
         "auto": "auto",
@@ -44,18 +45,28 @@ def load_model(
             max_memory["cpu"] = max_cpu_memory
     offload_folder.mkdir(parents=True, exist_ok=True)
     model_config = None
-    if awq_version:
+    if awq_version or awq_backend:
         model_config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
         raw_quantization_config = getattr(model_config, "quantization_config", None)
         if isinstance(raw_quantization_config, dict):
             raw_quantization_config = dict(raw_quantization_config)
-            raw_quantization_config["version"] = awq_version
+            if awq_version:
+                raw_quantization_config["version"] = awq_version
+            if awq_backend:
+                raw_quantization_config["backend"] = awq_backend
             model_config.quantization_config = raw_quantization_config
         elif raw_quantization_config is not None and hasattr(raw_quantization_config, "version"):
-            raw_quantization_config.version = awq_version
+            if awq_version:
+                raw_quantization_config.version = awq_version
+            if awq_backend:
+                raw_quantization_config.backend = awq_backend
         else:
             raise RuntimeError("model config does not contain an AWQ quantization_config")
-        print(f"using AWQ kernel version: {awq_version}", flush=True)
+        print(
+            f"using AWQ config override: version={awq_version or 'default'}, "
+            f"backend={awq_backend or 'default'}",
+            flush=True,
+        )
     model_kwargs = {
         "dtype": torch_dtype,
         "device_map": device_map,
@@ -238,7 +249,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-gpu-memory", default="22GiB")
     parser.add_argument("--max-cpu-memory", default="")
     parser.add_argument("--offload-folder", type=Path, default=Path("/root/autodl-tmp/offload"))
-    parser.add_argument("--awq-version", choices=["", "gemm", "gemv", "exllama"], default="")
+    parser.add_argument("--awq-version", choices=["", "gemm", "gemv", "gemv_fast", "llm-awq"], default="")
+    parser.add_argument(
+        "--awq-backend",
+        choices=["", "auto", "gemm", "gemm_triton", "gemv", "gemv_fast", "torch_awq", "torch_fused_awq"],
+        default="",
+    )
     parser.add_argument("--system", default="You are a helpful assistant.")
     parser.add_argument("--history-file", type=Path)
     parser.add_argument("--fresh-start", action="store_true")
@@ -273,6 +289,7 @@ def main() -> None:
         max_cpu_memory=args.max_cpu_memory,
         offload_folder=args.offload_folder,
         awq_version=args.awq_version,
+        awq_backend=args.awq_backend,
     )
 
     if args.history_file and args.history_file.exists() and not args.fresh_start:
