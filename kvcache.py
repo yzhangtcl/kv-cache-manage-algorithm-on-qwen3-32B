@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -664,6 +665,71 @@ def generate_with_budgeted_kv(
         repetition_penalty=repetition_penalty,
         stream_callback=stream_callback,
     )
+
+
+@contextmanager
+def budgeted_kv_cache(
+    model,
+    max_cache_tokens: int,
+    recent_window: int,
+    hot_cache_tokens: int,
+    hot_raw_tokens: int,
+    merge_similarity: float,
+    attention_decay: float,
+    importance_update: float,
+    log_every: int = 0,
+):
+    """Temporarily compress past_key_values while preserving model.generate()."""
+    original_forward = model.forward
+    stats = CompressionStats()
+    hot_state = HotKVState()
+    started = time.perf_counter()
+    calls = 0
+
+    def wrapped_forward(*args, **kwargs):
+        nonlocal calls
+        out = original_forward(*args, **kwargs)
+        past_key_values = getattr(out, "past_key_values", None)
+        if past_key_values is None:
+            return out
+
+        cache_tokens = _cache_seq_len(past_key_values)
+        hot_state.update_from_query(
+            past_key_values,
+            query=_last_query_from_cache(past_key_values),
+            update_strength=importance_update,
+        )
+        compressed = compress_past_key_values(
+            past_key_values=past_key_values,
+            recent_window=recent_window,
+            max_cache_tokens=max_cache_tokens,
+            hot_cache_tokens=hot_cache_tokens,
+            hot_raw_tokens=hot_raw_tokens,
+            merge_similarity=merge_similarity,
+            attention_decay=attention_decay,
+            hot_state=hot_state,
+            current_position=cache_tokens,
+            stats=stats,
+        )
+        if compressed is not past_key_values:
+            out.past_key_values = compressed
+        calls += 1
+        if log_every > 0 and calls % log_every == 0:
+            _log_progress(
+                phase="generate",
+                done=calls,
+                total=0,
+                cache_tokens=_cache_seq_len(getattr(out, "past_key_values", compressed)),
+                stats=stats,
+                start_time=started,
+            )
+        return out
+
+    model.forward = wrapped_forward
+    try:
+        yield stats
+    finally:
+        model.forward = original_forward
 
 
 def generate_with_budgeted_kv_from_input_ids(
