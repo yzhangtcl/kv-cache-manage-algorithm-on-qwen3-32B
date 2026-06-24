@@ -189,6 +189,35 @@ def _position_ids(start: int, length: int, device: torch.device) -> torch.Tensor
     return torch.arange(start, start + length, device=device, dtype=torch.long).unsqueeze(0)
 
 
+def _forward_with_cache(
+    model,
+    input_ids: torch.Tensor,
+    position_ids: torch.Tensor,
+    past_key_values,
+):
+    past_len = _cache_seq_len(past_key_values)
+    attention_mask = torch.ones(
+        (input_ids.shape[0], past_len + int(input_ids.shape[1])),
+        device=input_ids.device,
+        dtype=torch.long,
+    )
+    kwargs = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "position_ids": position_ids,
+        "cache_position": position_ids.reshape(-1),
+        "past_key_values": past_key_values,
+        "use_cache": True,
+    }
+    try:
+        return model(**kwargs)
+    except TypeError as exc:
+        if "cache_position" not in str(exc):
+            raise
+        kwargs.pop("cache_position")
+        return model(**kwargs)
+
+
 def _sample_next_token(
     logits: torch.Tensor,
     temperature: float,
@@ -687,11 +716,11 @@ def generate_with_budgeted_kv_from_input_ids(
         chunk = input_ids[:, cursor : cursor + prefill_chunk_tokens]
         position_ids = _position_ids(cursor, int(chunk.shape[1]), device)
         with torch.inference_mode():
-            out = model(
+            out = _forward_with_cache(
+                model=model,
                 input_ids=chunk,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
-                use_cache=True,
             )
         past_key_values = out.past_key_values
         logits = out.logits
@@ -763,11 +792,11 @@ def generate_with_budgeted_kv_from_input_ids(
                 break
 
         with torch.inference_mode():
-            out = model(
+            out = _forward_with_cache(
+                model=model,
                 input_ids=next_token,
                 position_ids=_position_ids(absolute_position, 1, device),
                 past_key_values=past_key_values,
-                use_cache=True,
             )
         absolute_position += 1
         past_key_values = out.past_key_values
