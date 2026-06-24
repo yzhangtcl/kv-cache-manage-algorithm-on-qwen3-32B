@@ -284,8 +284,8 @@ def main() -> None:
         offload_folder=args.offload_folder,
     )
 
-    correct = 0
-    finished = 0
+    mode_correct = {mode: 0 for mode in modes}
+    mode_scored = {mode: 0 for mode in modes}
     started = time.perf_counter()
     for idx, case in enumerate(cases):
         case_id = str(case["id"])
@@ -316,8 +316,9 @@ def main() -> None:
                 error = f"{type(exc).__name__}: {exc}"
                 clear_cuda_state()
 
-            correct += int(ok)
-            finished += 1
+            if status == "ok":
+                mode_correct[mode] += int(ok)
+                mode_scored[mode] += 1
             append_row(
                 args.output_csv,
                 result_row(
@@ -336,7 +337,8 @@ def main() -> None:
             case_time = result.elapsed_sec if result is not None else 0.0
             print(
                 f"[case {idx + 1}/{len(cases)}] {case_id} mode={mode} "
-                f"status={status} ok={ok} running_acc={correct / max(1, finished):.2%} "
+                f"status={status} ok={ok} "
+                f"{mode}_acc={mode_correct[mode] / max(1, mode_scored[mode]):.2%} "
                 f"case_time={case_time:.1f}s total_time={total_elapsed:.1f}s",
                 flush=True,
             )

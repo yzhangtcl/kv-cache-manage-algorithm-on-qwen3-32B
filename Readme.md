@@ -48,8 +48,8 @@ OOM 压力评测：
 
 先运行 `python3 make_reliability_datasets.py` 生成：
 
-- `datasets/reliability_speed.jsonl`：中等长上下文，用于比较 full KV 与 kvmanage 的速度和显存。
-- `datasets/oom_stress.jsonl`：更长的重复事实上下文，用于制造 full KV OOM、kvmanage 能完成的场景。
+- `datasets/reliability_speed.jsonl`：多条约 8k/10k/12k 级别长上下文，用于比较 full KV 与 4k kvmanage 的速度和显存。
+- `datasets/oom_stress.jsonl`：多条更长的重复事实上下文，用于制造 full KV OOM、kvmanage 能完成的场景。
 
 `batch_qa_eval.py --mode both` 会对同一个 case 先跑 `full`，再跑 `kvmanage`，输出 CSV 中的关键字段：
 
@@ -58,10 +58,11 @@ OOM 压力评测：
 - `elapsed_sec`、`peak_memory_gb`：耗时和峰值显存。
 - `avg_kept_cache_tokens`、`dropped_tokens_total`、`merged_tokens_total`：kvmanage 的压缩统计。
 
+`summarize_eval.py` 会按 `mode` 分开统计 accuracy、平均耗时、平均峰值显存、OOM 数和 error 数，避免把 full KV 的 OOM 与 kvmanage 的正确率混在一起。
+
 汇总结果：
 
 ```bash
 python3 summarize_eval.py /root/autodl-tmp/kvcache_outputs/reliability_speed.csv
 python3 summarize_eval.py /root/autodl-tmp/kvcache_outputs/oom_stress.csv
 ```
-

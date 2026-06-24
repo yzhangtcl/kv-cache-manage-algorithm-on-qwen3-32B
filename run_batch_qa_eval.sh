@@ -3,6 +3,9 @@ set -euo pipefail
 
 python3 make_reliability_datasets.py
 
+OUTPUT_CSV=/root/autodl-tmp/kvcache_outputs/reliability_speed.csv
+rm -f "$OUTPUT_CSV"
+
 python3 batch_qa_eval.py \
   --model Qwen/Qwen3-32B-AWQ \
   --dataset datasets/reliability_speed.jsonl \
@@ -12,14 +15,14 @@ python3 batch_qa_eval.py \
   --max-cpu-memory "" \
   --offload-folder /root/autodl-tmp/offload \
   --prefill-chunk-tokens 4096 \
-  --max-cache-tokens 3072 \
-  --recent-window 1024 \
-  --hot-cache-tokens 1024 \
+  --max-cache-tokens 4096 \
+  --recent-window 2048 \
+  --hot-cache-tokens 1536 \
   --hot-raw-tokens -1 \
   --merge-similarity 0.90 \
   --attention-decay 0.995 \
   --importance-update 0 \
-  --output-csv /root/autodl-tmp/kvcache_outputs/reliability_speed.csv \
+  --output-csv "$OUTPUT_CSV" \
   --artifacts-dir /root/autodl-tmp/kvcache_outputs/reliability_speed
 
-python3 summarize_eval.py /root/autodl-tmp/kvcache_outputs/reliability_speed.csv
+python3 summarize_eval.py "$OUTPUT_CSV"

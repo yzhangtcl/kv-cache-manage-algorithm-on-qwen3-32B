@@ -7,13 +7,13 @@ import json
 from pathlib import Path
 
 
-def repeated_policy_prompt(repeats: int) -> str:
+def repeated_policy_prompt(repeats: int, label: str = "standard") -> str:
     blocks = []
     for idx in range(repeats):
         blocks.append(
             "\n".join(
                 [
-                    f"Block {idx:04d}: Budgeted KV cache keeps a recent window for local context.",
+                    f"Block {idx:04d} [{label}]: Budgeted KV cache keeps a recent window for local context.",
                     "The same block says hot tokens are retained when they carry repeated importance.",
                     "Cold tokens may be merged into representative key/value states.",
                     "The reliability risk is that compression is approximate, so evaluation must check quality.",
@@ -27,7 +27,7 @@ def repeated_policy_prompt(repeats: int) -> str:
     )
 
 
-def repeated_ops_prompt(repeats: int) -> str:
+def repeated_ops_prompt(repeats: int, label: str = "standard") -> str:
     projects = [
         ("Atlas", "113", "daily backups"),
         ("Borealis", "227", "index audits"),
@@ -38,7 +38,9 @@ def repeated_ops_prompt(repeats: int) -> str:
     for idx in range(repeats):
         name, code, routine = projects[idx % len(projects)]
         lines.append(
-            f"Archive line {idx:04d}: project {name} uses code {code} and routine {routine}."
+            f"Archive line {idx:04d} [{label}]: project {name} uses code {code} and routine {routine}. "
+            f"The repeated project record says {name} keeps the same code {code} across reviews. "
+            f"Operators should answer from the repeated pattern, not from a single rare line."
         )
     return (
         "Operations archive. Each project fact is repeated many times; answer from the repeated pattern.\n\n"
@@ -47,13 +49,13 @@ def repeated_ops_prompt(repeats: int) -> str:
     )
 
 
-def repeated_oom_prompt(repeats: int) -> str:
+def repeated_oom_prompt(repeats: int, label: str) -> str:
     blocks = []
     for idx in range(repeats):
         blocks.append(
             "\n".join(
                 [
-                    f"Stress record {idx:04d}: The approved deployment verdict is reliable-with-monitoring.",
+                    f"Stress record {idx:04d} [{label}]: The approved deployment verdict is reliable-with-monitoring.",
                     "Evidence repeated here: short QA remains stable, long summaries retain policy facts, and memory drops.",
                     "The accepted caveat is that exact rare-token recall should not be the only benchmark.",
                     "The action item is to compare full KV against kvmanage under the same prompt.",
@@ -77,50 +79,65 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create repeated-fact reliability datasets.")
     parser.add_argument("--output-dir", type=Path, default=Path("datasets"))
-    parser.add_argument("--speed-repeats", type=int, default=260)
+    parser.add_argument(
+        "--speed-repeats",
+        type=int,
+        default=220,
+        help="Base repeat count for 8k-ish speed cases; script also creates longer variants.",
+    )
     parser.add_argument("--oom-repeats", type=int, default=360)
+    parser.add_argument("--oom-cases", type=int, default=3)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    speed_rows = [
-        {
-            "id": "speed_policy_summary",
-            "category": "speed_long",
-            "prompt": repeated_policy_prompt(args.speed_repeats),
-            "expected_keywords": ["recent", "hot", "cold", "merged", "risk"],
-            "min_keyword_hits": 4,
-            "max_new_tokens": 160,
-            "stop_after_sentences": 0,
-        },
-        {
-            "id": "speed_ops_summary",
-            "category": "speed_long",
-            "prompt": repeated_ops_prompt(args.speed_repeats),
-            "expected_keywords": ["Atlas", "113", "Cygnus", "389", "Dione", "431"],
-            "min_keyword_hits": 5,
-            "max_new_tokens": 160,
-            "stop_after_sentences": 0,
-        },
-    ]
-    oom_rows = [
-        {
-            "id": "oom_repeated_verdict",
-            "category": "oom_stress",
-            "prompt": repeated_oom_prompt(args.oom_repeats),
-            "expected_keywords": [
-                "reliable-with-monitoring",
-                "short QA",
-                "long summaries",
-                "memory",
-                "rare-token recall",
-            ],
-            "min_keyword_hits": 4,
-            "max_new_tokens": 192,
-            "stop_after_sentences": 0,
-        }
-    ]
+    speed_rows = []
+    for suffix, extra_repeats in [("8k", 0), ("10k", 70), ("12k", 140)]:
+        repeats = args.speed_repeats + extra_repeats
+        speed_rows.extend(
+            [
+                {
+                    "id": f"speed_policy_summary_{suffix}",
+                    "category": "speed_long",
+                    "prompt": repeated_policy_prompt(repeats, label=suffix),
+                    "expected_keywords": ["recent", "hot", "cold", "merged", "risk"],
+                    "min_keyword_hits": 4,
+                    "max_new_tokens": 160,
+                    "stop_after_sentences": 0,
+                },
+                {
+                    "id": f"speed_ops_summary_{suffix}",
+                    "category": "speed_long",
+                    "prompt": repeated_ops_prompt(repeats, label=suffix),
+                    "expected_keywords": ["Atlas", "113", "Cygnus", "389", "Dione", "431"],
+                    "min_keyword_hits": 5,
+                    "max_new_tokens": 160,
+                    "stop_after_sentences": 0,
+                },
+            ]
+        )
+
+    oom_rows = []
+    for case_idx in range(args.oom_cases):
+        label = f"oom{case_idx + 1}"
+        oom_rows.append(
+            {
+                "id": f"oom_repeated_verdict_{case_idx + 1:02d}",
+                "category": "oom_stress",
+                "prompt": repeated_oom_prompt(args.oom_repeats + case_idx * 10, label=label),
+                "expected_keywords": [
+                    "reliable-with-monitoring",
+                    "short QA",
+                    "long summaries",
+                    "memory",
+                    "rare-token recall",
+                ],
+                "min_keyword_hits": 4,
+                "max_new_tokens": 192,
+                "stop_after_sentences": 0,
+            }
+        )
     write_jsonl(args.output_dir / "reliability_speed.jsonl", speed_rows)
     write_jsonl(args.output_dir / "oom_stress.jsonl", oom_rows)
     print(f"wrote {args.output_dir / 'reliability_speed.jsonl'}")
