@@ -7,12 +7,12 @@ python3 chat_qwen_awq.py \
   --model "$MODEL_PATH" \
   --dtype auto \
   --max-gpu-memory 18GiB \
-  --max-cpu-memory "" \
+  --max-cpu-memory 110GiB \
   --use-kvcache \
-  --prefill-chunk-tokens 256 \
-  --max-cache-tokens 2048 \
+  --prefill-chunk-tokens 4096 \
+  --max-cache-tokens 3072 \
   --recent-window 1024 \
-  --hot-cache-tokens 768 \
+  --hot-cache-tokens 1024 \
   --hot-raw-tokens -1 \
   --merge-similarity 0.90 \
   --attention-decay 0.995 \
