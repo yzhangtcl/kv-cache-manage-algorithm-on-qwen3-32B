@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from kvcache import generate_with_budgeted_kv_from_input_ids
+from kvcache import budgeted_kv_cache
 
 
 def load_model(
@@ -120,18 +120,21 @@ def generate_reply(
 ) -> str:
     input_ids = render_messages(tokenizer, messages, enable_thinking).to(model.device)
     if use_kvcache:
-        chunks: list[str] = []
-
-        def stream_chunk(chunk: str) -> None:
-            print(chunk, end="", flush=True)
-            chunks.append(chunk)
-
-        result = generate_with_budgeted_kv_from_input_ids(
+        generation_kwargs = {
+            "input_ids": input_ids,
+            "max_new_tokens": max_new_tokens,
+            "do_sample": temperature > 0,
+            "temperature": temperature if temperature > 0 else None,
+            "top_p": top_p,
+            "repetition_penalty": repetition_penalty,
+            "pad_token_id": tokenizer.eos_token_id,
+            "eos_token_id": tokenizer.eos_token_id,
+        }
+        generation_kwargs = {
+            key: value for key, value in generation_kwargs.items() if value is not None
+        }
+        with budgeted_kv_cache(
             model=model,
-            tokenizer=tokenizer,
-            input_ids=input_ids,
-            max_new_tokens=max_new_tokens,
-            prefill_chunk_tokens=prefill_chunk_tokens,
             max_cache_tokens=max_cache_tokens,
             recent_window=recent_window,
             hot_cache_tokens=hot_cache_tokens,
@@ -140,18 +143,24 @@ def generate_reply(
             attention_decay=attention_decay,
             importance_update=importance_update,
             log_every=kv_log_every,
-            stop_after_regex="",
-            stop_after_sentences=0,
-            temperature=temperature,
-            top_p=top_p,
-            greedy=temperature <= 0,
-            repetition_penalty=repetition_penalty,
-            stream_callback=stream_chunk if stream else None,
-        )
-        reply = result.text.strip()
-        if stream:
+        ):
+            if not stream:
+                with torch.inference_mode():
+                    output = model.generate(**generation_kwargs)
+                new_tokens = output[0, input_ids.shape[-1] :]
+                return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+            streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+            generation_kwargs["streamer"] = streamer
+            thread = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+            thread.start()
+            chunks = []
+            for chunk in streamer:
+                print(chunk, end="", flush=True)
+                chunks.append(chunk)
+            thread.join()
             print()
-        return reply
+            return "".join(chunks).strip()
 
     generation_kwargs = {
         "input_ids": input_ids,
