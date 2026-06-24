@@ -12,11 +12,6 @@ from pathlib import Path
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-try:
-    from transformers import AwqConfig
-except ImportError:
-    AwqConfig = None
-
 from kvcache import budgeted_kv_cache
 
 
@@ -48,22 +43,18 @@ def load_model(
         if max_cpu_memory:
             max_memory["cpu"] = max_cpu_memory
     offload_folder.mkdir(parents=True, exist_ok=True)
-    quantization_config = None
+    model_config = None
     if awq_version:
-        if AwqConfig is None:
-            raise RuntimeError("this transformers version does not expose AwqConfig")
         model_config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
         raw_quantization_config = getattr(model_config, "quantization_config", None)
         if isinstance(raw_quantization_config, dict):
             raw_quantization_config = dict(raw_quantization_config)
             raw_quantization_config["version"] = awq_version
-            raw_quantization_config.pop("quant_method", None)
-            try:
-                quantization_config = AwqConfig(**raw_quantization_config)
-            except TypeError:
-                quantization_config = AwqConfig(version=awq_version)
+            model_config.quantization_config = raw_quantization_config
+        elif raw_quantization_config is not None and hasattr(raw_quantization_config, "version"):
+            raw_quantization_config.version = awq_version
         else:
-            quantization_config = AwqConfig(version=awq_version)
+            raise RuntimeError("model config does not contain an AWQ quantization_config")
         print(f"using AWQ kernel version: {awq_version}", flush=True)
     model_kwargs = {
         "dtype": torch_dtype,
@@ -73,8 +64,8 @@ def load_model(
         "trust_remote_code": True,
         "low_cpu_mem_usage": True,
     }
-    if quantization_config is not None:
-        model_kwargs["quantization_config"] = quantization_config
+    if model_config is not None:
+        model_kwargs["config"] = model_config
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         **model_kwargs,
