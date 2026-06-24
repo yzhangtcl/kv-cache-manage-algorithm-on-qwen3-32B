@@ -594,6 +594,7 @@ def generate_with_budgeted_kv(
     use_chat_template: bool = False,
     chat_template_enable_thinking: bool | None = None,
     repetition_penalty: float = 1.0,
+    stream_callback=None,
 ) -> GenerationResult:
     if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
         messages = [{"role": "user", "content": prompt}]
@@ -632,6 +633,7 @@ def generate_with_budgeted_kv(
         top_p=top_p,
         greedy=greedy,
         repetition_penalty=repetition_penalty,
+        stream_callback=stream_callback,
     )
 
 
@@ -655,6 +657,7 @@ def generate_with_budgeted_kv_from_input_ids(
     top_p: float,
     greedy: bool,
     repetition_penalty: float = 1.0,
+    stream_callback=None,
 ) -> GenerationResult:
     device = model.device
     input_ids = input_ids.to(device)
@@ -733,11 +736,21 @@ def generate_with_budgeted_kv_from_input_ids(
     eos_ids = _eos_token_ids(tokenizer)
     absolute_position = prompt_len
     stop_pattern = re.compile(stop_after_regex) if stop_after_regex else None
+    streamed_text = ""
 
     for _ in range(max_new_tokens):
         token_id = int(next_token.item())
         generated.append(token_id)
         penalty_token_ids.add(token_id)
+        if stream_callback is not None and token_id not in eos_ids:
+            text = tokenizer.decode(generated, skip_special_tokens=True)
+            if text.startswith(streamed_text):
+                delta = text[len(streamed_text) :]
+            else:
+                delta = text
+            if delta:
+                stream_callback(delta)
+            streamed_text = text
         if token_id in eos_ids:
             break
         if stop_pattern is not None:
