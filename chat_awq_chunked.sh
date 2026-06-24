@@ -15,9 +15,9 @@ python3 chat_qwen_awq.py \
   --use-kvcache \
   --generation-backend chunked-kv \
   --prefill-chunk-tokens 256 \
-  --max-cache-tokens 2048 \
-  --recent-window 1024 \
-  --hot-cache-tokens 768 \
+  --max-cache-tokens 4096 \
+  --recent-window 2048 \
+  --hot-cache-tokens 1536 \
   --hot-raw-tokens -1 \
   --merge-similarity 0.90 \
   --attention-decay 0.995 \
