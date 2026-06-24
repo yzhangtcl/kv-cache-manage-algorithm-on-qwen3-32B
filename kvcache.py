@@ -168,6 +168,10 @@ def _cache_seq_len(past_key_values) -> int:
 def _replace_cache_entries(original, compressed_layers: PastKeyValues):
     if isinstance(original, tuple):
         return compressed_layers
+    if hasattr(original, "key_cache") and hasattr(original, "value_cache"):
+        original.key_cache = [key for key, _value in compressed_layers]
+        original.value_cache = [value for _key, value in compressed_layers]
+        return original
     entries = _cache_entries(original)
     if entries and len(entries) == len(compressed_layers):
         for (_old_key, _old_value, layer), (new_key, new_value) in zip(entries, compressed_layers):
@@ -190,6 +194,15 @@ def _position_ids(start: int, length: int, device: torch.device) -> torch.Tensor
     return torch.arange(start, start + length, device=device, dtype=torch.long).unsqueeze(0)
 
 
+def _cache_position(past_len: int, length: int, device: torch.device) -> torch.Tensor:
+    return torch.arange(past_len, past_len + length, device=device, dtype=torch.long)
+
+
+def _cuda_synchronize_if_available() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
 def _forward_with_cache(
     model,
     input_ids: torch.Tensor,
@@ -206,7 +219,7 @@ def _forward_with_cache(
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "position_ids": position_ids,
-        "cache_position": position_ids.reshape(-1),
+        "cache_position": _cache_position(past_len, int(input_ids.shape[1]), input_ids.device),
         "past_key_values": past_key_values,
         "use_cache": True,
     }
@@ -667,6 +680,55 @@ def generate_with_budgeted_kv(
     )
 
 
+def generate_full_kv(
+    model,
+    tokenizer,
+    prompt: str,
+    max_new_tokens: int,
+    prefill_chunk_tokens: int,
+    stop_after_regex: str,
+    stop_after_sentences: int,
+    temperature: float,
+    top_p: float,
+    greedy: bool,
+    use_chat_template: bool = False,
+    chat_template_enable_thinking: bool | None = None,
+    repetition_penalty: float = 1.0,
+    stream_callback=None,
+) -> GenerationResult:
+    if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+        messages = [{"role": "user", "content": prompt}]
+        chat_kwargs = {
+            "add_generation_prompt": True,
+            "tokenize": False,
+        }
+        if chat_template_enable_thinking is not None:
+            chat_kwargs["enable_thinking"] = chat_template_enable_thinking
+        try:
+            rendered_prompt = tokenizer.apply_chat_template(messages, **chat_kwargs)
+        except TypeError:
+            chat_kwargs.pop("enable_thinking", None)
+            rendered_prompt = tokenizer.apply_chat_template(messages, **chat_kwargs)
+        encoded = tokenizer(rendered_prompt, return_tensors="pt", add_special_tokens=False)
+    else:
+        encoded = tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
+
+    return generate_full_kv_from_input_ids(
+        model=model,
+        tokenizer=tokenizer,
+        input_ids=encoded["input_ids"],
+        max_new_tokens=max_new_tokens,
+        prefill_chunk_tokens=prefill_chunk_tokens,
+        stop_after_regex=stop_after_regex,
+        stop_after_sentences=stop_after_sentences,
+        temperature=temperature,
+        top_p=top_p,
+        greedy=greedy,
+        repetition_penalty=repetition_penalty,
+        stream_callback=stream_callback,
+    )
+
+
 @contextmanager
 def budgeted_kv_cache(
     model,
@@ -732,6 +794,130 @@ def budgeted_kv_cache(
         model.forward = original_forward
 
 
+def generate_full_kv_from_input_ids(
+    model,
+    tokenizer,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+    prefill_chunk_tokens: int,
+    stop_after_regex: str,
+    stop_after_sentences: int,
+    temperature: float,
+    top_p: float,
+    greedy: bool,
+    repetition_penalty: float = 1.0,
+    stream_callback=None,
+) -> GenerationResult:
+    device = model.device
+    input_ids = input_ids.to(device)
+    if input_ids.dim() != 2 or int(input_ids.shape[0]) != 1:
+        raise ValueError("input_ids must have shape [1, sequence_length]")
+    if prefill_chunk_tokens <= 0:
+        raise ValueError("prefill_chunk_tokens must be positive")
+
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+    _cuda_synchronize_if_available()
+    start_time = time.perf_counter()
+
+    past_key_values = None
+    logits = None
+    prompt_len = int(input_ids.shape[1])
+    model_limit = getattr(getattr(model, "config", None), "max_position_embeddings", None)
+    if isinstance(model_limit, int) and model_limit > 0 and prompt_len > model_limit:
+        raise ValueError(
+            f"prompt has {prompt_len} tokens, but model max_position_embeddings is "
+            f"{model_limit}."
+        )
+
+    cursor = 0
+    while cursor < prompt_len:
+        chunk = input_ids[:, cursor : cursor + prefill_chunk_tokens]
+        position_ids = _position_ids(cursor, int(chunk.shape[1]), device)
+        with torch.inference_mode():
+            out = _forward_with_cache(
+                model=model,
+                input_ids=chunk,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+            )
+        past_key_values = out.past_key_values
+        logits = out.logits
+        cursor += int(chunk.shape[1])
+
+    generated: list[int] = []
+    penalty_token_ids = set(int(token_id) for token_id in input_ids[0].tolist())
+    next_token = _sample_next_token(
+        logits,
+        temperature,
+        top_p,
+        greedy,
+        repetition_penalty=repetition_penalty,
+        penalty_token_ids=penalty_token_ids,
+    )
+    eos_ids = _eos_token_ids(tokenizer)
+    absolute_position = prompt_len
+    stop_pattern = re.compile(stop_after_regex) if stop_after_regex else None
+    streamed_text = ""
+
+    for _ in range(max_new_tokens):
+        token_id = int(next_token.item())
+        generated.append(token_id)
+        penalty_token_ids.add(token_id)
+        if stream_callback is not None and token_id not in eos_ids:
+            text = tokenizer.decode(generated, skip_special_tokens=True)
+            if text.startswith(streamed_text):
+                delta = text[len(streamed_text) :]
+            else:
+                delta = text
+            if delta:
+                stream_callback(delta)
+            streamed_text = text
+        if token_id in eos_ids:
+            break
+        if stop_pattern is not None:
+            partial_text = tokenizer.decode(generated, skip_special_tokens=True)
+            if stop_pattern.search(partial_text):
+                break
+        if stop_after_sentences > 0:
+            partial_text = tokenizer.decode(generated, skip_special_tokens=True)
+            if _sentence_count(partial_text) >= stop_after_sentences:
+                break
+
+        with torch.inference_mode():
+            out = _forward_with_cache(
+                model=model,
+                input_ids=next_token,
+                position_ids=_position_ids(absolute_position, 1, device),
+                past_key_values=past_key_values,
+            )
+        absolute_position += 1
+        past_key_values = out.past_key_values
+        next_token = _sample_next_token(
+            out.logits,
+            temperature,
+            top_p,
+            greedy,
+            repetition_penalty=repetition_penalty,
+            penalty_token_ids=penalty_token_ids,
+        )
+
+    _cuda_synchronize_if_available()
+    elapsed = time.perf_counter() - start_time
+    peak_gb = 0.0
+    if torch.cuda.is_available():
+        peak_gb = torch.cuda.max_memory_allocated() / 1024**3
+
+    return GenerationResult(
+        text=tokenizer.decode(generated, skip_special_tokens=True),
+        prompt_tokens=prompt_len,
+        generated_tokens=len(generated),
+        elapsed_sec=elapsed,
+        peak_memory_gb=peak_gb,
+        compression=CompressionStats(),
+    )
+
+
 def generate_with_budgeted_kv_from_input_ids(
     model,
     tokenizer,
@@ -765,6 +951,7 @@ def generate_with_budgeted_kv_from_input_ids(
         torch.cuda.reset_peak_memory_stats()
     stats = CompressionStats()
     hot_state = HotKVState()
+    _cuda_synchronize_if_available()
     start_time = time.perf_counter()
 
     past_key_values = None
@@ -901,6 +1088,7 @@ def generate_with_budgeted_kv_from_input_ids(
                 start_time=start_time,
             )
 
+    _cuda_synchronize_if_available()
     elapsed = time.perf_counter() - start_time
     peak_gb = 0.0
     if torch.cuda.is_available():
