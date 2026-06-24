@@ -59,6 +59,33 @@ MAX_GPU_MEMORY=18GiB MAX_CPU_MEMORY=110GiB PREFILL_CHUNK_TOKENS=512 ./run_batch_
 
 `MAX_CPU_MEMORY` 只允许模型权重通过 `device_map=auto` 放到 CPU/offload folder；Transformers 不会自动把运行时 `past_key_values` KV cache 或 attention 临时张量溢出到 CPU。大输入如果仍 OOM，优先降低 `PREFILL_CHUNK_TOKENS`，例如 256 或 128。
 
+减少 kvmanage 压缩开销：
+
+```bash
+COMPRESS_EVERY=4 ./run_batch_qa_eval.sh
+COMPRESS_EVERY=8 ./run_batch_qa_eval.sh
+```
+
+`COMPRESS_EVERY` 越大，Python 压缩次数越少、速度可能更好，但 cache 会在两次压缩之间短暂超过预算，显存压力也更高。
+
+如果 32B-AWQ 权重本身占用过高，速度对照建议换小一些的模型，让 full KV baseline 也能完成：
+
+```bash
+pip install -U "huggingface_hub[cli]"
+huggingface-cli download Qwen/Qwen3-8B-AWQ \
+  --local-dir /root/autodl-tmp/models/Qwen3-8B-AWQ \
+  --local-dir-use-symlinks False \
+  --resume-download
+
+./run_batch_qa_eval.sh
+```
+
+OOM 展示可以继续用默认 32B：
+
+```bash
+MODEL_NAME=Qwen/Qwen3-32B-AWQ ./run_oom_eval.sh
+```
+
 ## 实验建议
 
 先运行 `python3 make_reliability_datasets.py` 生成：

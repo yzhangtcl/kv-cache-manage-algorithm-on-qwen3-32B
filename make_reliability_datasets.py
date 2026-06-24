@@ -97,7 +97,7 @@ def main() -> None:
     for case_idx in range(args.speed_cases):
         level = case_idx % 3
         family_idx = case_idx // 3
-        suffix = ["8k", "10k", "12k"][level]
+        suffix = ["16k", "20k", "24k"][level]
         repeats = args.speed_repeats + level * 70 + family_idx * 8
         if case_idx % 2 == 0:
             speed_rows.append(

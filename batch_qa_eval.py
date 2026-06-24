@@ -249,6 +249,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--merge-similarity", type=float, default=0.90)
     parser.add_argument("--attention-decay", type=float, default=0.995)
     parser.add_argument("--importance-update", type=float, default=0.02)
+    parser.add_argument("--compress-every", type=int, default=1)
     parser.add_argument("--log-every", type=int, default=0)
     parser.add_argument("--output-csv", type=Path, default=Path("outputs/batch_qa_eval.csv"))
     parser.add_argument("--artifacts-dir", type=Path)
@@ -304,6 +305,7 @@ def generate_case(args: argparse.Namespace, model, tokenizer, case: dict, mode: 
         merge_similarity=args.merge_similarity,
         attention_decay=args.attention_decay,
         importance_update=args.importance_update,
+        compress_every=args.compress_every,
         log_every=args.log_every,
     )
 

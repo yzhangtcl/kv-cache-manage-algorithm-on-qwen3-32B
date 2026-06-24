@@ -150,6 +150,7 @@ def generate_reply(
     merge_similarity: float,
     attention_decay: float,
     importance_update: float,
+    compress_every: int,
     kv_log_every: int,
     generation_backend: str,
 ) -> str:
@@ -175,6 +176,7 @@ def generate_reply(
             merge_similarity=merge_similarity,
             attention_decay=attention_decay,
             importance_update=importance_update,
+            compress_every=compress_every,
             log_every=kv_log_every,
             stop_after_regex="",
             stop_after_sentences=0,
@@ -212,6 +214,7 @@ def generate_reply(
             merge_similarity=merge_similarity,
             attention_decay=attention_decay,
             importance_update=importance_update,
+            compress_every=compress_every,
             log_every=kv_log_every,
         ):
             if not stream:
@@ -309,6 +312,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--merge-similarity", type=float, default=0.90)
     parser.add_argument("--attention-decay", type=float, default=0.995)
     parser.add_argument("--importance-update", type=float, default=0.02)
+    parser.add_argument("--compress-every", type=int, default=1)
     parser.add_argument("--kv-log-every", type=int, default=0)
     return parser.parse_args()
 
@@ -381,6 +385,7 @@ def main() -> None:
             merge_similarity=args.merge_similarity,
             attention_decay=args.attention_decay,
             importance_update=args.importance_update,
+            compress_every=args.compress_every,
             kv_log_every=args.kv_log_every,
             generation_backend=args.generation_backend,
         )

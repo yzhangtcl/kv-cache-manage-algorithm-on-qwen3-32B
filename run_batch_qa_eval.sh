@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SPEED_CASES="${SPEED_CASES:-10}"
+SPEED_CASES="${SPEED_CASES:-100}"
 OOM_CASES="${OOM_CASES:-100}"
 SPEED_REPEATS="${SPEED_REPEATS:-220}"
 OOM_REPEATS="${OOM_REPEATS:-360}"
-MAX_GPU_MEMORY="${MAX_GPU_MEMORY:-18GiB}"
-MAX_CPU_MEMORY="${MAX_CPU_MEMORY:-110GiB}"
-PREFILL_CHUNK_TOKENS="${PREFILL_CHUNK_TOKENS:-512}"
+MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/models/Qwen3-8B-AWQ}"
+MAX_GPU_MEMORY="${MAX_GPU_MEMORY:-22GiB}"
+MAX_CPU_MEMORY="${MAX_CPU_MEMORY:-}"
+PREFILL_CHUNK_TOKENS="${PREFILL_CHUNK_TOKENS:-1024}"
+COMPRESS_EVERY="${COMPRESS_EVERY:-4}"
 
 OUTPUT_CSV=/root/autodl-tmp/kvcache_outputs/reliability_speed.csv
 rm -f "$OUTPUT_CSV"
@@ -19,7 +21,7 @@ python3 make_reliability_datasets.py \
   --oom-repeats "$OOM_REPEATS"
 
 python3 batch_qa_eval.py \
-  --model Qwen/Qwen3-32B-AWQ \
+  --model "$MODEL_NAME" \
   --dataset datasets/reliability_speed.jsonl \
   --dtype auto \
   --mode both \
@@ -34,6 +36,7 @@ python3 batch_qa_eval.py \
   --merge-similarity 0.90 \
   --attention-decay 0.995 \
   --importance-update 0 \
+  --compress-every "$COMPRESS_EVERY" \
   --output-csv "$OUTPUT_CSV" \
   --artifacts-dir /root/autodl-tmp/kvcache_outputs/reliability_speed
 

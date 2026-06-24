@@ -635,6 +635,7 @@ def generate_with_budgeted_kv(
     merge_similarity: float,
     attention_decay: float,
     importance_update: float,
+    compress_every: int,
     log_every: int,
     stop_after_regex: str,
     stop_after_sentences: int,
@@ -676,6 +677,7 @@ def generate_with_budgeted_kv(
         merge_similarity=merge_similarity,
         attention_decay=attention_decay,
         importance_update=importance_update,
+        compress_every=compress_every,
         log_every=log_every,
         stop_after_regex=stop_after_regex,
         stop_after_sentences=stop_after_sentences,
@@ -746,6 +748,7 @@ def budgeted_kv_cache(
     merge_similarity: float,
     attention_decay: float,
     importance_update: float,
+    compress_every: int = 1,
     log_every: int = 0,
 ):
     """Temporarily compress past_key_values while preserving model.generate()."""
@@ -754,6 +757,7 @@ def budgeted_kv_cache(
     hot_state = HotKVState()
     started = time.perf_counter()
     calls = 0
+    compress_every = max(1, compress_every)
 
     def wrapped_forward(*args, **kwargs):
         nonlocal calls
@@ -768,21 +772,24 @@ def budgeted_kv_cache(
             query=_last_query_from_cache(past_key_values),
             update_strength=importance_update,
         )
-        compressed = compress_past_key_values(
-            past_key_values=past_key_values,
-            recent_window=recent_window,
-            max_cache_tokens=max_cache_tokens,
-            hot_cache_tokens=hot_cache_tokens,
-            hot_raw_tokens=hot_raw_tokens,
-            merge_similarity=merge_similarity,
-            attention_decay=attention_decay,
-            hot_state=hot_state,
-            current_position=cache_tokens,
-            stats=stats,
-        )
-        if compressed is not past_key_values:
-            out.past_key_values = compressed
         calls += 1
+        if calls % compress_every == 0 or cache_tokens > max_cache_tokens * compress_every:
+            compressed = compress_past_key_values(
+                past_key_values=past_key_values,
+                recent_window=recent_window,
+                max_cache_tokens=max_cache_tokens,
+                hot_cache_tokens=hot_cache_tokens,
+                hot_raw_tokens=hot_raw_tokens,
+                merge_similarity=merge_similarity,
+                attention_decay=attention_decay,
+                hot_state=hot_state,
+                current_position=cache_tokens,
+                stats=stats,
+            )
+            if compressed is not past_key_values:
+                out.past_key_values = compressed
+        else:
+            compressed = past_key_values
         if log_every > 0 and calls % log_every == 0:
             _log_progress(
                 phase="generate",
@@ -938,6 +945,7 @@ def generate_with_budgeted_kv_from_input_ids(
     merge_similarity: float,
     attention_decay: float,
     importance_update: float,
+    compress_every: int,
     log_every: int,
     stop_after_regex: str,
     stop_after_sentences: int,
@@ -953,6 +961,7 @@ def generate_with_budgeted_kv_from_input_ids(
         raise ValueError("input_ids must have shape [1, sequence_length]")
     if prefill_chunk_tokens <= 0:
         raise ValueError("prefill_chunk_tokens must be positive")
+    compress_every = max(1, compress_every)
 
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
@@ -972,6 +981,7 @@ def generate_with_budgeted_kv_from_input_ids(
             "python3 scripts/make_long_prompt.py --repeats 300 --output long_prompt.txt"
         )
     cursor = 0
+    prefill_chunks_seen = 0
     while cursor < prompt_len:
         chunk = input_ids[:, cursor : cursor + prefill_chunk_tokens]
         position_ids = _position_ids(cursor, int(chunk.shape[1]), device)
@@ -989,18 +999,24 @@ def generate_with_budgeted_kv_from_input_ids(
             query=_last_query_from_cache(past_key_values),
             update_strength=importance_update,
         )
-        past_key_values = compress_past_key_values(
-            past_key_values=past_key_values,
-            recent_window=recent_window,
-            max_cache_tokens=max_cache_tokens,
-            hot_cache_tokens=hot_cache_tokens,
-            hot_raw_tokens=hot_raw_tokens,
-            merge_similarity=merge_similarity,
-            attention_decay=attention_decay,
-            hot_state=hot_state,
-            current_position=cursor + int(chunk.shape[1]),
-            stats=stats,
+        prefill_chunks_seen += 1
+        should_compress = (
+            prefill_chunks_seen % compress_every == 0
+            or _cache_seq_len(past_key_values) > max_cache_tokens * compress_every
         )
+        if should_compress:
+            past_key_values = compress_past_key_values(
+                past_key_values=past_key_values,
+                recent_window=recent_window,
+                max_cache_tokens=max_cache_tokens,
+                hot_cache_tokens=hot_cache_tokens,
+                hot_raw_tokens=hot_raw_tokens,
+                merge_similarity=merge_similarity,
+                attention_decay=attention_decay,
+                hot_state=hot_state,
+                current_position=cursor + int(chunk.shape[1]),
+                stats=stats,
+            )
         cursor += int(chunk.shape[1])
         if log_every > 0 and (cursor >= prompt_len or cursor % log_every < int(chunk.shape[1])):
             _log_progress(
@@ -1011,6 +1027,19 @@ def generate_with_budgeted_kv_from_input_ids(
                 stats=stats,
                 start_time=start_time,
             )
+
+    past_key_values = compress_past_key_values(
+        past_key_values=past_key_values,
+        recent_window=recent_window,
+        max_cache_tokens=max_cache_tokens,
+        hot_cache_tokens=hot_cache_tokens,
+        hot_raw_tokens=hot_raw_tokens,
+        merge_similarity=merge_similarity,
+        attention_decay=attention_decay,
+        hot_state=hot_state,
+        current_position=prompt_len,
+        stats=stats,
+    )
 
     generated: list[int] = []
     penalty_token_ids = set(int(token_id) for token_id in input_ids[0].tolist())
@@ -1027,6 +1056,7 @@ def generate_with_budgeted_kv_from_input_ids(
     stop_pattern = re.compile(stop_after_regex) if stop_after_regex else None
     streamed_text = ""
 
+    decode_steps_seen = 0
     for _ in range(max_new_tokens):
         token_id = int(next_token.item())
         generated.append(token_id)
@@ -1065,18 +1095,24 @@ def generate_with_budgeted_kv_from_input_ids(
             query=_last_query_from_cache(past_key_values),
             update_strength=importance_update,
         )
-        past_key_values = compress_past_key_values(
-            past_key_values=past_key_values,
-            recent_window=recent_window,
-            max_cache_tokens=max_cache_tokens,
-            hot_cache_tokens=hot_cache_tokens,
-            hot_raw_tokens=hot_raw_tokens,
-            merge_similarity=merge_similarity,
-            attention_decay=attention_decay,
-            hot_state=hot_state,
-            current_position=absolute_position,
-            stats=stats,
+        decode_steps_seen += 1
+        should_compress = (
+            decode_steps_seen % compress_every == 0
+            or _cache_seq_len(past_key_values) > max_cache_tokens * compress_every
         )
+        if should_compress:
+            past_key_values = compress_past_key_values(
+                past_key_values=past_key_values,
+                recent_window=recent_window,
+                max_cache_tokens=max_cache_tokens,
+                hot_cache_tokens=hot_cache_tokens,
+                hot_raw_tokens=hot_raw_tokens,
+                merge_similarity=merge_similarity,
+                attention_decay=attention_decay,
+                hot_state=hot_state,
+                current_position=absolute_position,
+                stats=stats,
+            )
         next_token = _sample_next_token(
             out.logits,
             temperature,
