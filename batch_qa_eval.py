@@ -206,11 +206,14 @@ def load_model(
             max_memory[0] = max_gpu_memory
         if max_cpu_memory:
             max_memory["cpu"] = max_cpu_memory
+    device_map = device
+    if max_cpu_memory and device in {"cuda", "cuda:0", "gpu", "0"}:
+        device_map = "auto"
     offload_folder.mkdir(parents=True, exist_ok=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         dtype=torch_dtype,
-        device_map=device,
+        device_map=device_map,
         max_memory=max_memory,
         offload_folder=str(offload_folder),
         trust_remote_code=True,

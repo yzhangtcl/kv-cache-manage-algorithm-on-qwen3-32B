@@ -51,6 +51,14 @@ SPEED_CASES=10 ./run_batch_qa_eval.sh
 OOM_CASES=100 ./run_oom_eval.sh
 ```
 
+大上下文且允许模型权重 CPU offload：
+
+```bash
+MAX_GPU_MEMORY=18GiB MAX_CPU_MEMORY=110GiB PREFILL_CHUNK_TOKENS=512 ./run_batch_qa_eval.sh
+```
+
+`MAX_CPU_MEMORY` 只允许模型权重通过 `device_map=auto` 放到 CPU/offload folder；Transformers 不会自动把运行时 `past_key_values` KV cache 或 attention 临时张量溢出到 CPU。大输入如果仍 OOM，优先降低 `PREFILL_CHUNK_TOKENS`，例如 256 或 128。
+
 ## 实验建议
 
 先运行 `python3 make_reliability_datasets.py` 生成：

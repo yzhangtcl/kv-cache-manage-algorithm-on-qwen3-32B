@@ -198,6 +198,13 @@ def _cache_position(past_len: int, length: int, device: torch.device) -> torch.T
     return torch.arange(past_len, past_len + length, device=device, dtype=torch.long)
 
 
+def _model_input_device(model) -> torch.device:
+    try:
+        return next(model.get_input_embeddings().parameters()).device
+    except (AttributeError, StopIteration):
+        return torch.device(getattr(model, "device", "cuda" if torch.cuda.is_available() else "cpu"))
+
+
 def _cuda_synchronize_if_available() -> None:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -808,7 +815,7 @@ def generate_full_kv_from_input_ids(
     repetition_penalty: float = 1.0,
     stream_callback=None,
 ) -> GenerationResult:
-    device = model.device
+    device = _model_input_device(model)
     input_ids = input_ids.to(device)
     if input_ids.dim() != 2 or int(input_ids.shape[0]) != 1:
         raise ValueError("input_ids must have shape [1, sequence_length]")
@@ -940,7 +947,7 @@ def generate_with_budgeted_kv_from_input_ids(
     repetition_penalty: float = 1.0,
     stream_callback=None,
 ) -> GenerationResult:
-    device = model.device
+    device = _model_input_device(model)
     input_ids = input_ids.to(device)
     if input_ids.dim() != 2 or int(input_ids.shape[0]) != 1:
         raise ValueError("input_ids must have shape [1, sequence_length]")

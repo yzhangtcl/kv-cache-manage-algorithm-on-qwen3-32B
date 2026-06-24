@@ -5,6 +5,9 @@ SPEED_CASES="${SPEED_CASES:-10}"
 OOM_CASES="${OOM_CASES:-100}"
 SPEED_REPEATS="${SPEED_REPEATS:-220}"
 OOM_REPEATS="${OOM_REPEATS:-360}"
+MAX_GPU_MEMORY="${MAX_GPU_MEMORY:-18GiB}"
+MAX_CPU_MEMORY="${MAX_CPU_MEMORY:-110GiB}"
+PREFILL_CHUNK_TOKENS="${PREFILL_CHUNK_TOKENS:-512}"
 
 OUTPUT_CSV=/root/autodl-tmp/kvcache_outputs/oom_stress.csv
 rm -f "$OUTPUT_CSV"
@@ -20,10 +23,10 @@ python3 batch_qa_eval.py \
   --dataset datasets/oom_stress.jsonl \
   --dtype auto \
   --mode both \
-  --max-gpu-memory 18GiB \
-  --max-cpu-memory "" \
+  --max-gpu-memory "$MAX_GPU_MEMORY" \
+  --max-cpu-memory "$MAX_CPU_MEMORY" \
   --offload-folder /root/autodl-tmp/offload \
-  --prefill-chunk-tokens 2048 \
+  --prefill-chunk-tokens "$PREFILL_CHUNK_TOKENS" \
   --max-cache-tokens 4096 \
   --recent-window 2048 \
   --hot-cache-tokens 1536 \
