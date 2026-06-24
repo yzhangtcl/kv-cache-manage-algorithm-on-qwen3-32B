@@ -197,7 +197,7 @@ def _sample_next_token(
     repetition_penalty: float = 1.0,
     penalty_token_ids: Iterable[int] | None = None,
 ) -> torch.Tensor:
-    logits = logits[:, -1, :]
+    logits = logits[:, -1, :].clone()
     if repetition_penalty != 1.0 and penalty_token_ids:
         token_ids = torch.tensor(list(penalty_token_ids), device=logits.device, dtype=torch.long)
         token_logits = logits.index_select(dim=1, index=token_ids)
