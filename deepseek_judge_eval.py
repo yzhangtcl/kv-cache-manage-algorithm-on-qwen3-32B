@@ -54,6 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sleep-sec", type=float, default=0.0, help="Optional delay between API calls.")
     parser.add_argument("--max-answer-chars", type=int, default=5000)
     parser.add_argument("--max-prompt-chars", type=int, default=3000)
+    parser.add_argument("--fail-fast", action="store_true", help="Stop immediately after the first API/judge error.")
+    parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        help="Skip the small API test request before judging rows.",
+    )
     parser.add_argument(
         "--include-prompt",
         action="store_true",
@@ -211,6 +217,14 @@ def call_deepseek(client: Any, model: str, user_prompt: str) -> dict[str, Any]:
     return parse_judge_json(content or "{}")
 
 
+def preflight_deepseek(client: Any, model: str) -> None:
+    call_deepseek(
+        client,
+        model,
+        "题目：1+1等于几？\n参考答案：2\n待评测答案：2\n请只输出 JSON。",
+    )
+
+
 def summary_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
@@ -274,6 +288,14 @@ def main() -> None:
         if not api_key:
             raise SystemExit(f"missing API key: export {args.api_key_env}=your_deepseek_api_key")
         client = OpenAI(api_key=api_key, base_url=args.base_url)
+        if not args.no_preflight:
+            try:
+                preflight_deepseek(client, args.model)
+            except Exception as exc:
+                raise SystemExit(
+                    f"DeepSeek API preflight failed for model={args.model!r}, "
+                    f"base_url={args.base_url!r}: {type(exc).__name__}: {exc}"
+                ) from exc
 
     attempted = 0
     status_counts: Counter[str] = Counter()
@@ -323,6 +345,8 @@ def main() -> None:
         except Exception as exc:
             judge_status = "error"
             error = f"{type(exc).__name__}: {exc}"
+            if args.fail_fast:
+                raise SystemExit(f"judge failed at {case_id} mode={mode}: {error}") from exc
 
         out = {
             "row_key": row_key,
@@ -349,9 +373,10 @@ def main() -> None:
         append_result(args.output_csv, out)
         attempted += 1
         status_counts[judge_status] += 1
+        error_suffix = f" error={error[:220]}" if error else ""
         print(
             f"[judge {attempted}] {case_id} mode={mode} status={judge_status} "
-            f"correct={judge_correct} score={judge_score:.2f}",
+            f"correct={judge_correct} score={judge_score:.2f}{error_suffix}",
             flush=True,
         )
         if args.sleep_sec > 0:
