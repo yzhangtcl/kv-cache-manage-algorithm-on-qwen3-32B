@@ -154,3 +154,65 @@ kvmanage elapsed_sec vs sliding_window elapsed_sec
 6. 再结合 speed 图、OOM 图说明显存和速度收益。
 
 注意：不要在裁判 prompt 里告诉 DeepSeek “这个答案来自我的算法” 或 “这个答案来自 baseline”。脚本只提供 `mode` 到输出 CSV，不会把方法名写进裁判 prompt，避免裁判偏向某一种方法。
+
+## 10. 一键对比 KVManage 和滑动窗口
+
+你的方法参数：
+
+```text
+--max-cache-tokens 4096
+--recent-window 2048
+--hot-cache-tokens 1536
+```
+
+滑动窗口 baseline 参数：
+
+```text
+--max-cache-tokens 4096
+--recent-window 4096
+--hot-cache-tokens 0
+--hot-raw-tokens 0
+```
+
+这等价于同样最多保留 4096 个 KV token，但 baseline 只保留最近 4096 个 token，不保留 hot token，也不做 hot/cold 选择。
+
+已经提供一键脚本：
+
+```bash
+export DEEPSEEK_API_KEY="你的DeepSeek API Key"
+
+./run_kvmanage_vs_sliding_accuracy.sh
+```
+
+默认输出目录：
+
+```text
+/root/autodl-tmp/kvcache_outputs/accuracy_compare
+```
+
+关键输出：
+
+- `kvmanage.csv`：你的 KVManage 生成结果。
+- `sliding_window.csv`：滑动窗口 baseline 生成结果。
+- `deepseek_judge.csv`：DeepSeek 对每条答案的逐条判分。
+- `deepseek_judge_summary.csv`：按方法聚合后的准确率。
+
+看准确率：
+
+```bash
+cat /root/autodl-tmp/kvcache_outputs/accuracy_compare/deepseek_judge_summary.csv
+```
+
+如果你只想先跑少量样本确认流程：
+
+```bash
+SPEED_CASES=5 ./run_kvmanage_vs_sliding_accuracy.sh
+```
+
+如果完整 prompt 太长导致 API 上下文超限，可以截断 prompt：
+
+```bash
+MAX_PROMPT_CHARS=16000 ./run_kvmanage_vs_sliding_accuracy.sh
+```
+
+默认 `MAX_PROMPT_CHARS=0` 表示尽量发送完整 prompt 给 DeepSeek 裁判。

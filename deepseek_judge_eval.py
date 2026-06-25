@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--artifacts-dir",
         type=Path,
+        nargs="+",
         help="Optional artifacts directory created by batch_qa_eval.py; full outputs are read from here when present.",
     )
     parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
@@ -100,12 +101,14 @@ def safe_name(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_.-]+", "_", value)
 
 
-def artifact_output(artifacts_dir: Path | None, case_id: str, mode: str) -> str | None:
-    if artifacts_dir is None:
+def artifact_output(artifacts_dirs: list[Path] | None, case_id: str, mode: str) -> str | None:
+    if not artifacts_dirs:
         return None
-    path = artifacts_dir / f"{safe_name(case_id)}.{safe_name(mode)}.output.txt"
-    if path.exists():
-        return path.read_text(encoding="utf-8")
+    filename = f"{safe_name(case_id)}.{safe_name(mode)}.output.txt"
+    for artifacts_dir in artifacts_dirs:
+        path = artifacts_dir / filename
+        if path.exists():
+            return path.read_text(encoding="utf-8")
     return None
 
 

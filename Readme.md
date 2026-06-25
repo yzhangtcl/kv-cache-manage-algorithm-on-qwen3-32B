@@ -126,3 +126,17 @@ python3 deepseek_judge_eval.py \
 ```
 
 完整说明见 `DEEPSEEK_JUDGE.md`。
+
+一键对比你的 KVManage 和滑动窗口 baseline 的准确率：
+
+```bash
+export DEEPSEEK_API_KEY="你的DeepSeek API Key"
+./run_kvmanage_vs_sliding_accuracy.sh
+```
+
+该脚本会分别运行：
+
+- KVManage：`--max-cache-tokens 4096 --recent-window 2048 --hot-cache-tokens 1536`
+- Sliding window：`--max-cache-tokens 4096 --recent-window 4096 --hot-cache-tokens 0`
+
+然后用 DeepSeek V4 Flash 带原 prompt 做裁判，汇总结果在 `/root/autodl-tmp/kvcache_outputs/accuracy_compare/deepseek_judge_summary.csv`。

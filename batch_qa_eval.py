@@ -239,6 +239,11 @@ def parse_args() -> argparse.Namespace:
         default="kvmanage",
         help="Run budgeted KV, full KV baseline, or both.",
     )
+    parser.add_argument(
+        "--mode-label",
+        default="",
+        help="Optional output label for --mode kvmanage runs, e.g. sliding_window.",
+    )
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--default-max-new-tokens", type=int, default=1024)
     parser.add_argument("--prefill-chunk-tokens", type=int, default=256)
@@ -360,6 +365,8 @@ def result_row(
 
 def main() -> None:
     args = parse_args()
+    if args.mode_label and args.mode != "kvmanage":
+        raise SystemExit("--mode-label is only supported with --mode kvmanage")
     cases = load_jsonl(args.dataset)
     if args.limit > 0:
         cases = cases[: args.limit]
@@ -382,8 +389,9 @@ def main() -> None:
     for idx, case in enumerate(cases):
         case_id = str(case["id"])
         for mode in modes:
-            if (case_id, mode) in completed:
-                print(f"[skip] {case_id} mode={mode}", flush=True)
+            output_mode = args.mode_label if args.mode_label and mode == "kvmanage" else mode
+            if (case_id, output_mode) in completed:
+                print(f"[skip] {case_id} mode={output_mode}", flush=True)
                 continue
 
             result = None
@@ -392,7 +400,7 @@ def main() -> None:
                 ok, score_type, hits, required = score_output(case, result.text)
                 status = "ok"
                 error = ""
-                save_artifacts(args.artifacts_dir, case_id, mode, str(case["prompt"]), result.text)
+                save_artifacts(args.artifacts_dir, case_id, output_mode, str(case["prompt"]), result.text)
             except RuntimeError as exc:
                 if not is_oom_error(exc) and not args.continue_on_error:
                     raise
@@ -409,11 +417,13 @@ def main() -> None:
                 clear_cuda_state()
 
             if status == "ok":
-                mode_correct[mode] += int(ok)
-                mode_scored[mode] += 1
+                mode_correct.setdefault(output_mode, 0)
+                mode_scored.setdefault(output_mode, 0)
+                mode_correct[output_mode] += int(ok)
+                mode_scored[output_mode] += 1
             row = result_row(
                 case=case,
-                mode=mode,
+                mode=output_mode,
                 status=status,
                 ok=ok,
                 score_type=score_type,
@@ -427,9 +437,9 @@ def main() -> None:
             total_elapsed = time.perf_counter() - started
             case_time = result.elapsed_sec if result is not None else 0.0
             print(
-                f"[case {idx + 1}/{len(cases)}] {case_id} mode={mode} "
+                f"[case {idx + 1}/{len(cases)}] {case_id} mode={output_mode} "
                 f"status={status} ok={ok} "
-                f"{mode}_acc={mode_correct[mode] / max(1, mode_scored[mode]):.2%} "
+                f"{output_mode}_acc={mode_correct[output_mode] / max(1, mode_scored[output_mode]):.2%} "
                 f"case_time={case_time:.1f}s total_time={total_elapsed:.1f}s",
                 flush=True,
             )
