@@ -14,6 +14,8 @@
 - `summarize_eval.py`：汇总 full KV 与 kvmanage 的耗时、峰值显存、正确率和 OOM 情况。
 - `run_batch_qa_eval.sh`：批量 QA 评测启动脚本。
 - `run_oom_eval.sh`：full KV OOM、kvmanage 继续运行的压力评测脚本。
+- `deepseek_judge_eval.py`：调用 DeepSeek API 对已有评测 CSV 中的答案做 LLM 裁判判分。
+- `DEEPSEEK_JUDGE.md`：DeepSeek API key 获取、配置、判分命令和输出说明。
 - `datasets/all_qa.jsonl`：QA 评测数据集。
 - `requirements.txt`：Python 依赖列表。
 - `logqa.txt`：QA 运行日志或实验记录。
@@ -110,3 +112,17 @@ MODEL_NAME=Qwen/Qwen3-32B-AWQ ./run_oom_eval.sh
 python3 summarize_eval.py /root/autodl-tmp/kvcache_outputs/reliability_speed.csv
 python3 summarize_eval.py /root/autodl-tmp/kvcache_outputs/oom_stress.csv
 ```
+
+使用 DeepSeek V4 Flash 作为答案裁判：
+
+```bash
+export DEEPSEEK_API_KEY="你的DeepSeek API Key"
+python3 deepseek_judge_eval.py \
+  --dataset datasets/reliability_speed.jsonl \
+  --eval-csv speed4.csv \
+  --output-csv outputs/deepseek_judge_speed4.csv \
+  --summary-csv outputs/deepseek_judge_speed4_summary.csv \
+  --resume
+```
+
+完整说明见 `DEEPSEEK_JUDGE.md`。
