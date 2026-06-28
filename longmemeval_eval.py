@@ -393,6 +393,7 @@ def parse_args() -> argparse.Namespace:
         help="Token budget for just the rendered history before question/template text. Use 0 to disable.",
     )
     parser.add_argument("--max-new-tokens", type=int, default=800)
+    parser.add_argument("--csv-output-chars", type=int, default=700)
     parser.add_argument("--prefill-chunk-tokens", type=int, default=1024)
     parser.add_argument("--max-cache-tokens", type=int, default=4096)
     parser.add_argument("--recent-window", type=int, default=2048)
@@ -512,6 +513,7 @@ def main() -> None:
                     f"{compression.avg_cold_tokens:.1f}" if compression is not None else ""
                 ),
                 "prefill_chunk_tokens": str(args.prefill_chunk_tokens),
+                "max_new_tokens": str(args.max_new_tokens),
                 "compress_every": str(args.compress_every),
                 "max_cache_tokens": (
                     str(args.max_cache_tokens) if mode == "kvmanage" else str(args.sliding_cache_tokens)
@@ -529,7 +531,7 @@ def main() -> None:
                 ),
                 "answer": str(entry.get("answer", "")).replace("\n", " ")[:500],
                 "error": error.replace("\n", " ")[:700],
-                "output": hypothesis.replace("\n", " ")[:700],
+                "output": hypothesis.replace("\n", " ")[: max(0, args.csv_output_chars)],
             }
             append_csv(csv_path, row)
             total_elapsed = time.perf_counter() - started

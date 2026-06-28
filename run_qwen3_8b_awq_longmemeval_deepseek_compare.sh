@@ -17,6 +17,7 @@ HOT_CACHE_TOKENS_OVERRIDE="${HOT_CACHE_TOKENS:-}"
 HOT_RAW_TOKENS="${HOT_RAW_TOKENS:--1}"
 MAX_RETRIEVAL_TOKENS="${MAX_RETRIEVAL_TOKENS:-100000}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-800}"
+CSV_OUTPUT_CHARS="${CSV_OUTPUT_CHARS:-700}"
 IMPORTANCE_UPDATE="${IMPORTANCE_UPDATE:-0.02}"
 MERGE_SIMILARITY="${MERGE_SIMILARITY:-0.90}"
 ATTENTION_DECAY="${ATTENTION_DECAY:-0.995}"
@@ -92,6 +93,7 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
       --topk-context 1000 \
       --max-retrieval-tokens "$MAX_RETRIEVAL_TOKENS" \
       --max-new-tokens "$MAX_NEW_TOKENS" \
+      --csv-output-chars "$CSV_OUTPUT_CHARS" \
       --prefill-chunk-tokens "$PREFILL_CHUNK_TOKENS" \
       --max-cache-tokens "$cache_tokens" \
       --recent-window "$recent_window" \
@@ -131,6 +133,7 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
       --topk-context 1000 \
       --max-retrieval-tokens "$MAX_RETRIEVAL_TOKENS" \
       --max-new-tokens "$MAX_NEW_TOKENS" \
+      --csv-output-chars "$CSV_OUTPUT_CHARS" \
       --prefill-chunk-tokens "$PREFILL_CHUNK_TOKENS" \
       --sliding-cache-tokens "$cache_tokens" \
       --merge-similarity "$MERGE_SIMILARITY" \
