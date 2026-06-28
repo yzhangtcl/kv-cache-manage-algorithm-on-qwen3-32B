@@ -26,6 +26,9 @@ DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-${DEEPSEEK_JUDGE_MODEL:-deepseek-chat}}"
 JUDGE_LIMIT="${JUDGE_LIMIT:-0}"
 JUDGE_SLEEP_SEC="${JUDGE_SLEEP_SEC:-0}"
 LOG_EVERY="${LOG_EVERY:-0}"
+RUN_KVMANAGE="${RUN_KVMANAGE:-1}"
+RUN_SLIDING="${RUN_SLIDING:-1}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export WORD_DEDUP_PATTERN_WORDS="${WORD_DEDUP_PATTERN_WORDS:-4}"
 export WORD_DEDUP_MIN_REPEATS="${WORD_DEDUP_MIN_REPEATS:-2}"
 export WORD_DEDUP_KEEP_PER_PATTERN="${WORD_DEDUP_KEEP_PER_PATTERN:-1}"
@@ -68,74 +71,79 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
   kv_label="kvmanage_${cache_label}"
   sliding_label="sliding_window_${cache_label}"
 
-  echo
-  echo "Running Qwen3-8B-AWQ KVManage: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}, recent=${recent_window}, hot=${hot_cache_tokens}"
-  python3 longmemeval_eval.py \
-    --model "$MODEL_NAME" \
-    --dataset "$DATASET" \
-    --output-dir "$OUTPUT_DIR" \
-    --artifacts-dir "$ARTIFACTS_DIR" \
-    --dtype "$DTYPE" \
-    --device auto \
-    --max-gpu-memory "$MAX_GPU_MEMORY" \
-    --max-cpu-memory "$MAX_CPU_MEMORY" \
-    --offload-folder /root/autodl-tmp/offload \
-    --mode kvmanage \
-    --mode-label "$kv_label" \
-    --limit "$LIMIT" \
-    --history-format json \
-    --reading-method con \
-    --topk-context 1000 \
-    --max-retrieval-tokens "$MAX_RETRIEVAL_TOKENS" \
-    --max-new-tokens "$MAX_NEW_TOKENS" \
-    --prefill-chunk-tokens "$PREFILL_CHUNK_TOKENS" \
-    --max-cache-tokens "$cache_tokens" \
-    --recent-window "$recent_window" \
-    --hot-cache-tokens "$hot_cache_tokens" \
-    --hot-raw-tokens "$HOT_RAW_TOKENS" \
-    --merge-similarity "$MERGE_SIMILARITY" \
-    --attention-decay "$ATTENTION_DECAY" \
-    --importance-update "$IMPORTANCE_UPDATE" \
-    --compress-every "$COMPRESS_EVERY" \
-    --log-every "$LOG_EVERY" \
-    --rope-factor "$ROPE_FACTOR" \
-    --rope-theta "$ROPE_THETA" \
-    --resume \
-    --continue-on-error
+  if [[ "$RUN_KVMANAGE" != "0" ]]; then
+    echo
+    echo "Running Qwen3-8B-AWQ KVManage: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}, recent=${recent_window}, hot=${hot_cache_tokens}"
+    python3 longmemeval_eval.py \
+      --model "$MODEL_NAME" \
+      --dataset "$DATASET" \
+      --output-dir "$OUTPUT_DIR" \
+      --artifacts-dir "$ARTIFACTS_DIR" \
+      --dtype "$DTYPE" \
+      --device auto \
+      --max-gpu-memory "$MAX_GPU_MEMORY" \
+      --max-cpu-memory "$MAX_CPU_MEMORY" \
+      --offload-folder /root/autodl-tmp/offload \
+      --mode kvmanage \
+      --mode-label "$kv_label" \
+      --limit "$LIMIT" \
+      --history-format json \
+      --reading-method con \
+      --topk-context 1000 \
+      --max-retrieval-tokens "$MAX_RETRIEVAL_TOKENS" \
+      --max-new-tokens "$MAX_NEW_TOKENS" \
+      --prefill-chunk-tokens "$PREFILL_CHUNK_TOKENS" \
+      --max-cache-tokens "$cache_tokens" \
+      --recent-window "$recent_window" \
+      --hot-cache-tokens "$hot_cache_tokens" \
+      --hot-raw-tokens "$HOT_RAW_TOKENS" \
+      --merge-similarity "$MERGE_SIMILARITY" \
+      --attention-decay "$ATTENTION_DECAY" \
+      --importance-update "$IMPORTANCE_UPDATE" \
+      --compress-every "$COMPRESS_EVERY" \
+      --log-every "$LOG_EVERY" \
+      --rope-factor "$ROPE_FACTOR" \
+      --rope-theta "$ROPE_THETA" \
+      --resume \
+      --continue-on-error
+    hypotheses+=("$OUTPUT_DIR/${kv_label}.jsonl")
+    mode_labels+=("$kv_label")
+  fi
 
-  echo
-  echo "Running Qwen3-8B-AWQ sliding window: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}"
-  python3 longmemeval_eval.py \
-    --model "$MODEL_NAME" \
-    --dataset "$DATASET" \
-    --output-dir "$OUTPUT_DIR" \
-    --artifacts-dir "$ARTIFACTS_DIR" \
-    --dtype "$DTYPE" \
-    --device auto \
-    --max-gpu-memory "$MAX_GPU_MEMORY" \
-    --max-cpu-memory "$MAX_CPU_MEMORY" \
-    --offload-folder /root/autodl-tmp/offload \
-    --mode sliding \
-    --mode-label "$sliding_label" \
-    --limit "$LIMIT" \
-    --history-format json \
-    --reading-method con \
-    --topk-context 1000 \
-    --max-retrieval-tokens "$MAX_RETRIEVAL_TOKENS" \
-    --max-new-tokens "$MAX_NEW_TOKENS" \
-    --prefill-chunk-tokens "$PREFILL_CHUNK_TOKENS" \
-    --sliding-cache-tokens "$cache_tokens" \
-    --merge-similarity "$MERGE_SIMILARITY" \
-    --attention-decay "$ATTENTION_DECAY" \
-    --compress-every "$COMPRESS_EVERY" \
-    --log-every "$LOG_EVERY" \
-    --rope-factor "$ROPE_FACTOR" \
-    --rope-theta "$ROPE_THETA" \
-    --resume \
-    --continue-on-error
-
-  hypotheses+=("$OUTPUT_DIR/${kv_label}.jsonl" "$OUTPUT_DIR/${sliding_label}.jsonl")
-  mode_labels+=("$kv_label" "$sliding_label")
+  if [[ "$RUN_SLIDING" != "0" ]]; then
+    echo
+    echo "Running Qwen3-8B-AWQ sliding window: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}"
+    python3 longmemeval_eval.py \
+      --model "$MODEL_NAME" \
+      --dataset "$DATASET" \
+      --output-dir "$OUTPUT_DIR" \
+      --artifacts-dir "$ARTIFACTS_DIR" \
+      --dtype "$DTYPE" \
+      --device auto \
+      --max-gpu-memory "$MAX_GPU_MEMORY" \
+      --max-cpu-memory "$MAX_CPU_MEMORY" \
+      --offload-folder /root/autodl-tmp/offload \
+      --mode sliding \
+      --mode-label "$sliding_label" \
+      --limit "$LIMIT" \
+      --history-format json \
+      --reading-method con \
+      --topk-context 1000 \
+      --max-retrieval-tokens "$MAX_RETRIEVAL_TOKENS" \
+      --max-new-tokens "$MAX_NEW_TOKENS" \
+      --prefill-chunk-tokens "$PREFILL_CHUNK_TOKENS" \
+      --sliding-cache-tokens "$cache_tokens" \
+      --merge-similarity "$MERGE_SIMILARITY" \
+      --attention-decay "$ATTENTION_DECAY" \
+      --compress-every "$COMPRESS_EVERY" \
+      --log-every "$LOG_EVERY" \
+      --rope-factor "$ROPE_FACTOR" \
+      --rope-theta "$ROPE_THETA" \
+      --resume \
+      --continue-on-error
+    hypotheses+=("$OUTPUT_DIR/${sliding_label}.jsonl")
+    mode_labels+=("$sliding_label")
+  fi
 done
 
 if [[ "$JUDGE_LIMIT" != "0" ]]; then
