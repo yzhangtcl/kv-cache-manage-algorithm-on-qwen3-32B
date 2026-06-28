@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -629,14 +630,22 @@ def _select_token_dedup_indices(
     token_ids = hot_state.token_ids[:old_count].to(device=device, dtype=torch.long)
     if int(token_ids.numel()) < old_count:
         return torch.empty(0, device=device, dtype=torch.long)
-    latest_by_token: dict[int, int] = {}
+    min_repeats = max(2, int(os.environ.get("TOKEN_DEDUP_MIN_REPEATS", "16")))
+    keep_per_id = max(1, int(os.environ.get("TOKEN_DEDUP_KEEP_PER_ID", "4")))
+    positions_by_token: dict[int, list[int]] = {}
     for idx, token_id in enumerate(token_ids.tolist()):
         if token_id < 0:
             continue
-        latest_by_token[int(token_id)] = idx
-    if not latest_by_token:
+        positions_by_token.setdefault(int(token_id), []).append(idx)
+    if not positions_by_token:
         return torch.empty(0, device=device, dtype=torch.long)
-    selected = sorted(latest_by_token.values())
+    selected = []
+    for positions in positions_by_token.values():
+        if len(positions) >= min_repeats:
+            selected.extend(positions[-keep_per_id:])
+        else:
+            selected.extend(positions)
+    selected = sorted(selected)
     selected = selected[-min(budget, len(selected)) :]
     return torch.tensor(selected, device=device, dtype=torch.long)
 
