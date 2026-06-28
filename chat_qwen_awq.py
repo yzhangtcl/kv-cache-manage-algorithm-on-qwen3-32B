@@ -216,6 +216,7 @@ def generate_reply(
             importance_update=importance_update,
             compress_every=compress_every,
             log_every=kv_log_every,
+            tokenizer=tokenizer,
         ):
             if not stream:
                 with torch.inference_mode():
