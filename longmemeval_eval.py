@@ -265,7 +265,7 @@ def load_model(args: argparse.Namespace):
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         config=config,
-        dtype=torch_dtype,
+        torch_dtype=torch_dtype,
         device_map=device_map,
         max_memory=max_memory,
         offload_folder=str(args.offload_folder),

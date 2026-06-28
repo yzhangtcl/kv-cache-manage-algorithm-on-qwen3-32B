@@ -124,6 +124,77 @@ class HotKVState:
         self.importance = self.importance.index_select(0, indices).contiguous()
         self.token_positions = self.token_positions.index_select(0, indices).contiguous()
 
+    def replace_with_compressed(
+        self,
+        hot_raw_indices: torch.Tensor,
+        hot_cluster_source_indices: torch.Tensor,
+        hot_cluster_selected: torch.Tensor,
+        hot_cluster_assignment: torch.Tensor,
+        cold_indices: torch.Tensor,
+        cold_selected: torch.Tensor,
+        cold_assignment: torch.Tensor,
+        recent_indices: torch.Tensor,
+    ) -> None:
+        if self.importance is None or self.token_positions is None:
+            return
+        device = self.importance.device
+        hot_raw_indices = hot_raw_indices.to(device)
+        hot_cluster_source_indices = hot_cluster_source_indices.to(device)
+        hot_cluster_selected = hot_cluster_selected.to(device)
+        hot_cluster_assignment = hot_cluster_assignment.to(device)
+        cold_indices = cold_indices.to(device)
+        cold_selected = cold_selected.to(device)
+        cold_assignment = cold_assignment.to(device)
+        recent_indices = recent_indices.to(device)
+
+        parts_importance: list[torch.Tensor] = []
+        parts_positions: list[torch.Tensor] = []
+
+        def append_exact(indices: torch.Tensor) -> None:
+            if int(indices.numel()) == 0:
+                return
+            parts_importance.append(self.importance.index_select(0, indices))
+            parts_positions.append(self.token_positions.index_select(0, indices))
+
+        def append_merged(
+            source_indices: torch.Tensor,
+            selected_indices: torch.Tensor,
+            assignment: torch.Tensor,
+        ) -> None:
+            groups = int(selected_indices.numel())
+            if groups == 0:
+                return
+            source_importance = self.importance.index_select(0, source_indices)
+            merged_importance = torch.zeros(groups, device=device, dtype=torch.float32)
+            merged_importance.index_reduce_(
+                0,
+                assignment,
+                source_importance.to(dtype=torch.float32),
+                reduce="amax",
+                include_self=False,
+            )
+            empty = torch.bincount(assignment, minlength=groups) == 0
+            if bool(empty.any()):
+                empty_idx = torch.nonzero(empty, as_tuple=False).flatten()
+                fallback = self.importance.index_select(
+                    0, selected_indices.index_select(0, empty_idx)
+                )
+                merged_importance.index_copy_(0, empty_idx, fallback.to(dtype=torch.float32))
+            parts_importance.append(merged_importance)
+            parts_positions.append(self.token_positions.index_select(0, selected_indices))
+
+        append_exact(hot_raw_indices)
+        append_merged(hot_cluster_source_indices, hot_cluster_selected, hot_cluster_assignment)
+        append_merged(cold_indices, cold_selected, cold_assignment)
+        append_exact(recent_indices)
+
+        if parts_importance:
+            self.importance = torch.cat(parts_importance, dim=0).contiguous()
+            self.token_positions = torch.cat(parts_positions, dim=0).contiguous()
+        else:
+            self.importance = self.importance[:0].contiguous()
+            self.token_positions = self.token_positions[:0].contiguous()
+
 
 def _cache_entries(past_key_values) -> list[tuple[torch.Tensor, torch.Tensor, object | None]]:
     if past_key_values is None:
@@ -171,6 +242,8 @@ def _replace_cache_entries(original, compressed_layers: PastKeyValues):
     if hasattr(original, "key_cache") and hasattr(original, "value_cache"):
         original.key_cache = [key for key, _value in compressed_layers]
         original.value_cache = [value for _key, value in compressed_layers]
+        length = int(compressed_layers[0][0].shape[-2]) if compressed_layers else 0
+        _set_cache_length_metadata(original, length)
         return original
     entries = _cache_entries(original)
     if entries and len(entries) == len(compressed_layers):
@@ -188,6 +261,24 @@ def _replace_cache_entries(original, compressed_layers: PastKeyValues):
                     current.fill_(int(new_key.shape[-2]))
         return original
     return compressed_layers
+
+
+def _set_cache_length_metadata(cache, length: int) -> None:
+    for name in (
+        "_seen_tokens",
+        "seen_tokens",
+        "cache_length",
+        "_cache_length",
+        "seq_length",
+        "_seq_length",
+    ):
+        if not hasattr(cache, name):
+            continue
+        current = getattr(cache, name)
+        if isinstance(current, int):
+            setattr(cache, name, length)
+        elif isinstance(current, torch.Tensor):
+            current.fill_(length)
 
 
 def _position_ids(start: int, length: int, device: torch.device) -> torch.Tensor:
@@ -483,11 +574,16 @@ def compress_past_key_values(
 
     if hot_state is not None:
         recent_indices = torch.arange(old_count, seq_len, device=first_key.device)
-        keep_indices = torch.cat(
-            [hot_raw_indices, hot_cluster_selected, cold_selected, recent_indices],
-            dim=0,
+        hot_state.replace_with_compressed(
+            hot_raw_indices=hot_raw_indices,
+            hot_cluster_source_indices=hot_cluster_source_indices,
+            hot_cluster_selected=hot_cluster_selected,
+            hot_cluster_assignment=hot_cluster_assignment,
+            cold_indices=cold_indices,
+            cold_selected=cold_selected,
+            cold_assignment=assignment,
+            recent_indices=recent_indices,
         )
-        hot_state.subset(keep_indices)
 
     kept = _cache_seq_len(tuple(compressed_layers))
     if stats is not None:
@@ -545,6 +641,8 @@ def _select_hot_indices(
     if hot_state is None or hot_state.importance is None or hot_state.token_positions is None:
         return torch.arange(max(0, old_count - hot_budget), old_count, device=device, dtype=torch.long)
     importance = hot_state.importance[:old_count].to(device=device, dtype=torch.float32)
+    if not bool(torch.isfinite(importance).all()) or float(torch.max(torch.abs(importance)).item()) == 0.0:
+        return torch.arange(max(0, old_count - hot_budget), old_count, device=device, dtype=torch.long)
     positions = hot_state.token_positions[:old_count].to(device=device)
     if current_position is None:
         current_position = int(positions[-1].item()) + 1 if int(positions.numel()) else old_count
@@ -590,7 +688,7 @@ def _select_old_representatives(
     stride = max(1, old_count // budget)
     candidates = torch.arange(0, old_count, stride, device=old_summary.device, dtype=torch.long)
     candidates = candidates[-budget:]
-    if merge_similarity >= 1.0 or candidates.numel() >= budget:
+    if merge_similarity >= 1.0:
         return candidates[:budget]
 
     # Add a cheap diversity pass around the strided representatives. This keeps
