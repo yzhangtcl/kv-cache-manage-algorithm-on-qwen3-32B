@@ -11,7 +11,7 @@ MAX_CPU_MEMORY="${MAX_CPU_MEMORY:-}"
 DTYPE="${DTYPE:-auto}"
 PREFILL_CHUNK_TOKENS="${PREFILL_CHUNK_TOKENS:-512}"
 COMPRESS_EVERY="${COMPRESS_EVERY:-4}"
-KV_CACHE_TOKENS_LIST="${KV_CACHE_TOKENS_LIST:-20000 40000}"
+KV_CACHE_TOKENS_LIST="${KV_CACHE_TOKENS_LIST:-20000}"
 RECENT_WINDOW_OVERRIDE="${RECENT_WINDOW:-}"
 HOT_CACHE_TOKENS_OVERRIDE="${HOT_CACHE_TOKENS:-}"
 HOT_RAW_TOKENS="${HOT_RAW_TOKENS:--1}"
@@ -26,7 +26,7 @@ DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-${DEEPSEEK_JUDGE_MODEL:-deepseek-chat}}"
 JUDGE_LIMIT="${JUDGE_LIMIT:-0}"
 JUDGE_SLEEP_SEC="${JUDGE_SLEEP_SEC:-0}"
 
-if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+if [[ "$JUDGE_LIMIT" != "0" && -z "${DEEPSEEK_API_KEY:-}" ]]; then
   echo "DEEPSEEK_API_KEY is not set. Run: export DEEPSEEK_API_KEY=\"your_deepseek_api_key\"" >&2
   exit 1
 fi
@@ -131,18 +131,23 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
   mode_labels+=("$kv_label" "$sliding_label")
 done
 
-echo
-echo "Judging KVManage and sliding window outputs with DeepSeek"
-python3 longmemeval_deepseek_judge.py \
-  --reference "$DATASET" \
-  --hypothesis "${hypotheses[@]}" \
-  --mode-labels "${mode_labels[@]}" \
-  --output-csv "$OUTPUT_DIR/deepseek_judge.csv" \
-  --summary-csv "$OUTPUT_DIR/deepseek_judge_summary.csv" \
-  --model "$DEEPSEEK_MODEL" \
-  --limit "$JUDGE_LIMIT" \
-  --sleep-sec "$JUDGE_SLEEP_SEC" \
-  --resume
+if [[ "$JUDGE_LIMIT" != "0" ]]; then
+  echo
+  echo "Judging KVManage and sliding window outputs with DeepSeek"
+  python3 longmemeval_deepseek_judge.py \
+    --reference "$DATASET" \
+    --hypothesis "${hypotheses[@]}" \
+    --mode-labels "${mode_labels[@]}" \
+    --output-csv "$OUTPUT_DIR/deepseek_judge.csv" \
+    --summary-csv "$OUTPUT_DIR/deepseek_judge_summary.csv" \
+    --model "$DEEPSEEK_MODEL" \
+    --limit "$JUDGE_LIMIT" \
+    --sleep-sec "$JUDGE_SLEEP_SEC" \
+    --resume
+else
+  echo
+  echo "Skipping DeepSeek judge because JUDGE_LIMIT=0."
+fi
 
 echo
 echo "Wrote:"
@@ -152,5 +157,7 @@ for hypothesis in "${hypotheses[@]}"; do
 done
 echo "- $OUTPUT_DIR/deepseek_judge.csv"
 echo "- $OUTPUT_DIR/deepseek_judge_summary.csv"
-echo
-cat "$OUTPUT_DIR/deepseek_judge_summary.csv"
+if [[ -f "$OUTPUT_DIR/deepseek_judge_summary.csv" ]]; then
+  echo
+  cat "$OUTPUT_DIR/deepseek_judge_summary.csv"
+fi
