@@ -192,13 +192,16 @@ PREFILL_CHUNK_TOKENS=512
 KV_CACHE_TOKENS_LIST="20000 40000" ./run_qwen3_8b_awq_longmemeval_deepseek_compare.sh
 ```
 
-英文词去重默认只合并高频英文词，避免把实体、数字和低频内容词全局合并掉。合并后的 KV 用出现次数作为加权平均系数，并在后续压缩中继续累计：
+词级 pattern 去重会把连续 k 个完整单词作为 pattern key。空格和标点只作为分隔符，不进入 key；pattern 必须从单词开始、到单词结束。识别到重复 pattern 后，旧出现会作为冗余候选丢弃，只保留最近的代表出现，并给代表 pattern 内的 token 增加 hot 权重：
 
 ```bash
+WORD_DEDUP_PATTERN_WORDS=4
 WORD_DEDUP_MIN_REPEATS=2
+WORD_DEDUP_KEEP_PER_PATTERN=1
+WORD_DEDUP_BOOST=2.0
 ```
 
-如果关键信息丢失，先增大 `WORD_DEDUP_MIN_REPEATS`；如果 cache 降得不够，再减小这个阈值。
+如果关键信息丢失，先增大 `WORD_DEDUP_MIN_REPEATS` 或 `WORD_DEDUP_KEEP_PER_PATTERN`；如果 cache 降得不够，再减小这些阈值或增大 `WORD_DEDUP_PATTERN_WORDS`。
 
 输出：
 
