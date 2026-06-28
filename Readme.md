@@ -33,6 +33,7 @@ KVManage 在缓存超过预算后执行近似压缩：
 | `run_batch_qa_eval.sh` | 速度/显存对比评测脚本，默认使用 8B AWQ |
 | `run_oom_eval.sh` | OOM 压力评测脚本，默认使用 Qwen3-32B-AWQ |
 | `run_kvmanage_vs_sliding_accuracy.sh` | KVManage 与 sliding window baseline 的准确率对比脚本 |
+| `run_qwen3_6_27b_100k_cache_sweep.sh` | Qwen3.6-27B-AWQ，100k 输入，20k/40k KV cache 对比脚本 |
 | `plot_oom_chart.py` | 根据 OOM 评测 CSV 绘制图表 |
 | `datasets/` | 评测数据集 |
 | `outputs/` | 示例结果和图表 |
@@ -184,6 +185,37 @@ LIMIT=2 JUDGE_LIMIT=4 ./run_qwen3_32b_longmemeval_deepseek_compare.sh
 /root/autodl-tmp/kvcache_outputs/qwen3_32b_longmemeval_s_compare/sliding_window.jsonl
 /root/autodl-tmp/kvcache_outputs/qwen3_32b_longmemeval_s_compare/deepseek_judge.csv
 /root/autodl-tmp/kvcache_outputs/qwen3_32b_longmemeval_s_compare/deepseek_judge_summary.csv
+```
+
+如果要按当前目标跑 Qwen3.6-27B-AWQ、100k 输入，并比较 20k 与 40k KV cache：
+
+```bash
+MODEL_NAME=/root/autodl-tmp/models/Qwen3.6-27B-AWQ \
+DATASET=data/longmemeval_s_cleaned.json \
+LIMIT=0 \
+./run_qwen3_6_27b_100k_cache_sweep.sh
+```
+
+这个脚本默认等价于：
+
+```bash
+MAX_RETRIEVAL_TOKENS=100000
+KV_CACHE_TOKENS_LIST="20000 40000"
+PREFILL_CHUNK_TOKENS=512
+```
+
+输出：
+
+```bash
+/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_100k_cache_sweep/kvmanage_20k.jsonl
+/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_100k_cache_sweep/kvmanage_40k.jsonl
+/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_100k_cache_sweep/runs.csv
+```
+
+先小样本试跑：
+
+```bash
+LIMIT=1 ./run_qwen3_6_27b_100k_cache_sweep.sh
 ```
 
 再视显存调整：
