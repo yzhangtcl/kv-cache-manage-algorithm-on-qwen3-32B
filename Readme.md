@@ -104,6 +104,98 @@ python3 summarize_eval.py /root/autodl-tmp/kvcache_outputs/reliability_speed.csv
 python3 summarize_eval.py /root/autodl-tmp/kvcache_outputs/oom_stress.csv
 ```
 
+### LongMemEval-S 本地复现
+
+老师提到的 LongMemEval-S 建议单独跑，因为它的输入是真实多会话记忆数据，单题上下文可到 100k token 以上。先下载官方 cleaned 数据到本项目目录：
+
+```bash
+mkdir -p data
+wget -O data/longmemeval_s_cleaned.json \
+  https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+```
+
+先用 1 条样本做 smoke test：
+
+```bash
+MODEL_NAME=/root/autodl-tmp/models/Qwen3-8B-AWQ \
+DATASET=data/longmemeval_s_cleaned.json \
+MODE=all \
+LIMIT=1 \
+./run_longmemeval_s.sh
+```
+
+全量跑 KVManage、sliding window 和 full context：
+
+```bash
+MODEL_NAME=/root/autodl-tmp/models/Qwen3-8B-AWQ \
+DATASET=data/longmemeval_s_cleaned.json \
+MODE=all \
+LIMIT=0 \
+OUTPUT_DIR=/root/autodl-tmp/kvcache_outputs/longmemeval_s \
+./run_longmemeval_s.sh
+```
+
+`MODE=all` 会依次写出：
+
+```bash
+/root/autodl-tmp/kvcache_outputs/longmemeval_s/full.jsonl
+/root/autodl-tmp/kvcache_outputs/longmemeval_s/kvmanage.jsonl
+/root/autodl-tmp/kvcache_outputs/longmemeval_s/sliding_window.jsonl
+/root/autodl-tmp/kvcache_outputs/longmemeval_s/runs.csv
+```
+
+三个 `jsonl` 文件使用官方评测需要的 `question_id` 和 `hypothesis` 字段；`runs.csv` 只提供本地快速排查用的 token 数、耗时、显存、压缩次数和简单 answer substring 命中，不等价于官方 LLM judge 分数。
+
+如果使用 Qwen3 系列跑 100k+ 上下文，脚本默认启用 YaRN：
+
+```bash
+ROPE_FACTOR=4.0
+MAX_RETRIEVAL_TOKENS=129000
+```
+
+单卡显存不足时，先把 full context 单独去掉，只对比 KVManage 和 sliding：
+
+```bash
+MODE=kvmanage ./run_longmemeval_s.sh
+MODE=sliding ./run_longmemeval_s.sh
+```
+
+如果要在 Qwen3-32B-AWQ 上只对比 KVManage 和 sliding window，并用 DeepSeek 判正确性：
+
+```bash
+export DEEPSEEK_API_KEY="your_deepseek_api_key"
+
+MODEL_NAME=/root/autodl-tmp/models/Qwen3-32B-AWQ \
+DATASET=data/longmemeval_s_cleaned.json \
+LIMIT=0 \
+./run_qwen3_32b_longmemeval_deepseek_compare.sh
+```
+
+先小样本试跑：
+
+```bash
+LIMIT=2 JUDGE_LIMIT=4 ./run_qwen3_32b_longmemeval_deepseek_compare.sh
+```
+
+输出：
+
+```bash
+/root/autodl-tmp/kvcache_outputs/qwen3_32b_longmemeval_s_compare/kvmanage.jsonl
+/root/autodl-tmp/kvcache_outputs/qwen3_32b_longmemeval_s_compare/sliding_window.jsonl
+/root/autodl-tmp/kvcache_outputs/qwen3_32b_longmemeval_s_compare/deepseek_judge.csv
+/root/autodl-tmp/kvcache_outputs/qwen3_32b_longmemeval_s_compare/deepseek_judge_summary.csv
+```
+
+再视显存调整：
+
+```bash
+PREFILL_CHUNK_TOKENS=512
+MAX_CACHE_TOKENS=4096
+RECENT_WINDOW=2048
+HOT_CACHE_TOKENS=1536
+SLIDING_CACHE_TOKENS=4096
+```
+
 绘制 OOM 图表需要额外安装 `matplotlib`：
 
 ```bash
