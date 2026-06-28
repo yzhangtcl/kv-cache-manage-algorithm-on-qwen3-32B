@@ -500,6 +500,15 @@ def compress_past_key_values(
         int(hot_cluster_source_indices.numel()) - int(hot_cluster_selected.numel()),
     )
     merged_tokens = max(0, int(cold_indices.numel()) - int(cold_selected.numel()))
+    old_selected_indices = torch.cat(
+        [hot_raw_indices, hot_cluster_selected, cold_selected],
+        dim=0,
+    )
+    old_sort_order = (
+        torch.argsort(old_selected_indices)
+        if int(old_selected_indices.numel()) > 0
+        else torch.empty(0, device=first_key.device, dtype=torch.long)
+    )
     for key, value, _layer in entries:
         hot_raw_key = (
             key.index_select(2, hot_raw_indices.to(key.device))
@@ -527,10 +536,6 @@ def compress_past_key_values(
         else:
             hot_cluster_key = key[:, :, :0]
             hot_cluster_value = value[:, :, :0]
-        hot_key = torch.cat([hot_raw_key, hot_cluster_key], dim=2)
-        hot_value = (
-            torch.cat([hot_raw_value, hot_cluster_value], dim=2)
-        )
         if int(cold_selected.numel()) > 0:
             cold_key = _merge_subset_by_assignment(
                 key,
@@ -547,21 +552,24 @@ def compress_past_key_values(
         else:
             cold_key = key[:, :, :0]
             cold_value = value[:, :, :0]
+        old_key = torch.cat([hot_raw_key, hot_cluster_key, cold_key], dim=2)
+        old_value = torch.cat([hot_raw_value, hot_cluster_value, cold_value], dim=2)
+        if int(old_sort_order.numel()) > 0:
+            old_key = old_key.index_select(2, old_sort_order.to(old_key.device))
+            old_value = old_value.index_select(2, old_sort_order.to(old_value.device))
         recent_key = key[:, :, -recent:]
         recent_value = value[:, :, -recent:]
         compressed_layers.append(
             (
-                torch.cat([hot_key, cold_key, recent_key], dim=2).contiguous(),
-                torch.cat([hot_value, cold_value, recent_value], dim=2).contiguous(),
+                torch.cat([old_key, recent_key], dim=2).contiguous(),
+                torch.cat([old_value, recent_value], dim=2).contiguous(),
             )
         )
 
     if hot_state is not None:
         recent_indices = torch.arange(old_count, seq_len, device=first_key.device)
-        keep_indices = torch.cat(
-            [hot_raw_indices, hot_cluster_selected, cold_selected, recent_indices],
-            dim=0,
-        )
+        sorted_old_indices = old_selected_indices.index_select(0, old_sort_order)
+        keep_indices = torch.cat([sorted_old_indices, recent_indices], dim=0)
         hot_state.subset(keep_indices)
 
     kept = _cache_seq_len(tuple(compressed_layers))
