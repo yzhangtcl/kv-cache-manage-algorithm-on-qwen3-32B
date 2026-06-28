@@ -306,8 +306,10 @@ def _forward_with_cache(
     input_ids: torch.Tensor,
     position_ids: torch.Tensor,
     past_key_values,
+    cache_position_start: int | None = None,
 ):
     past_len = _cache_seq_len(past_key_values)
+    cache_start = past_len if cache_position_start is None else cache_position_start
     attention_mask = torch.ones(
         (input_ids.shape[0], past_len + int(input_ids.shape[1])),
         device=input_ids.device,
@@ -317,7 +319,7 @@ def _forward_with_cache(
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "position_ids": position_ids,
-        "cache_position": _cache_position(past_len, int(input_ids.shape[1]), input_ids.device),
+        "cache_position": _cache_position(cache_start, int(input_ids.shape[1]), input_ids.device),
         "past_key_values": past_key_values,
         "use_cache": True,
     }
@@ -952,6 +954,7 @@ def generate_full_kv_from_input_ids(
                 input_ids=chunk,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
+                cache_position_start=cursor,
             )
         past_key_values = out.past_key_values
         logits = out.logits
@@ -1002,6 +1005,7 @@ def generate_full_kv_from_input_ids(
                 input_ids=next_token,
                 position_ids=_position_ids(absolute_position, 1, device),
                 past_key_values=past_key_values,
+                cache_position_start=absolute_position,
             )
         absolute_position += 1
         past_key_values = out.past_key_values
@@ -1089,6 +1093,7 @@ def generate_with_budgeted_kv_from_input_ids(
                 input_ids=chunk,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
+                cache_position_start=cursor,
             )
         past_key_values = out.past_key_values
         logits = out.logits
@@ -1185,6 +1190,7 @@ def generate_with_budgeted_kv_from_input_ids(
                 input_ids=next_token,
                 position_ids=_position_ids(absolute_position, 1, device),
                 past_key_values=past_key_values,
+                cache_position_start=absolute_position,
             )
         absolute_position += 1
         past_key_values = out.past_key_values
