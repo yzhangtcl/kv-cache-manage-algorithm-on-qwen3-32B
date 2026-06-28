@@ -33,7 +33,7 @@ KVManage 在缓存超过预算后执行近似压缩：
 | `run_batch_qa_eval.sh` | 速度/显存对比评测脚本，默认使用 8B AWQ |
 | `run_oom_eval.sh` | OOM 压力评测脚本，默认使用 Qwen3-32B-AWQ |
 | `run_kvmanage_vs_sliding_accuracy.sh` | KVManage 与 sliding window baseline 的准确率对比脚本 |
-| `run_qwen3_6_27b_longmemeval_deepseek_compare.sh` | Qwen3.6-27B-AWQ，100k 输入，20k/40k KVManage 与 sliding window DeepSeek 对比脚本 |
+| `run_qwen3_6_27b_longmemeval_deepseek_compare.sh` | Qwen3-14B-AWQ，100k 输入，20k/40k KVManage 与 sliding window DeepSeek 对比脚本 |
 | `plot_oom_chart.py` | 根据 OOM 评测 CSV 绘制图表 |
 | `datasets/` | 评测数据集 |
 | `outputs/` | 示例结果和图表 |
@@ -161,12 +161,12 @@ MODE=kvmanage ./run_longmemeval_s.sh
 MODE=sliding ./run_longmemeval_s.sh
 ```
 
-如果要在 Qwen3.6-27B-AWQ 上对比 KVManage 和 sliding window，并用 DeepSeek 判正确性：
+如果要在 Qwen3-14B-AWQ 上对比 KVManage 和 sliding window，并用 DeepSeek 判正确性：
 
 ```bash
 export DEEPSEEK_API_KEY="your_deepseek_api_key"
 
-MODEL_NAME=/root/autodl-tmp/models/Qwen3.6-27B-AWQ \
+MODEL_NAME=/root/autodl-tmp/models/Qwen3-14B-AWQ \
 DATASET=data/longmemeval_s_cleaned.json \
 LIMIT=0 \
 ./run_qwen3_6_27b_longmemeval_deepseek_compare.sh
@@ -189,12 +189,12 @@ PREFILL_CHUNK_TOKENS=512
 输出：
 
 ```bash
-/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_longmemeval_s_compare/kvmanage_20k.jsonl
-/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_longmemeval_s_compare/sliding_window_20k.jsonl
-/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_longmemeval_s_compare/kvmanage_40k.jsonl
-/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_longmemeval_s_compare/sliding_window_40k.jsonl
-/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_longmemeval_s_compare/deepseek_judge.csv
-/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_longmemeval_s_compare/deepseek_judge_summary.csv
+/root/autodl-tmp/kvcache_outputs/qwen3_14b_awq_longmemeval_s_compare/kvmanage_20k.jsonl
+/root/autodl-tmp/kvcache_outputs/qwen3_14b_awq_longmemeval_s_compare/sliding_window_20k.jsonl
+/root/autodl-tmp/kvcache_outputs/qwen3_14b_awq_longmemeval_s_compare/kvmanage_40k.jsonl
+/root/autodl-tmp/kvcache_outputs/qwen3_14b_awq_longmemeval_s_compare/sliding_window_40k.jsonl
+/root/autodl-tmp/kvcache_outputs/qwen3_14b_awq_longmemeval_s_compare/deepseek_judge.csv
+/root/autodl-tmp/kvcache_outputs/qwen3_14b_awq_longmemeval_s_compare/deepseek_judge_summary.csv
 ```
 
 再视显存调整：

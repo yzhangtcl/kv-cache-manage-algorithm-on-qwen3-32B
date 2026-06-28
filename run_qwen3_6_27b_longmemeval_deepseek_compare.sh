@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/models/Qwen3.6-27B-AWQ}"
+MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/models/Qwen3-14B-AWQ}"
 DATASET="${DATASET:-data/longmemeval_s_cleaned.json}"
-OUTPUT_DIR="${OUTPUT_DIR:-/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_longmemeval_s_compare}"
+OUTPUT_DIR="${OUTPUT_DIR:-/root/autodl-tmp/kvcache_outputs/qwen3_14b_awq_longmemeval_s_compare}"
 ARTIFACTS_DIR="${ARTIFACTS_DIR:-$OUTPUT_DIR/artifacts}"
 LIMIT="${LIMIT:-0}"
 MAX_GPU_MEMORY="${MAX_GPU_MEMORY:-22GiB}"
 MAX_CPU_MEMORY="${MAX_CPU_MEMORY:-}"
-DTYPE="${DTYPE:-float16}"
+DTYPE="${DTYPE:-auto}"
 PREFILL_CHUNK_TOKENS="${PREFILL_CHUNK_TOKENS:-512}"
 COMPRESS_EVERY="${COMPRESS_EVERY:-4}"
 KV_CACHE_TOKENS_LIST="${KV_CACHE_TOKENS_LIST:-20000 40000}"
@@ -64,7 +64,7 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
   sliding_label="sliding_window_${cache_label}"
 
   echo
-  echo "Running Qwen3.6-27B-AWQ KVManage: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}, recent=${recent_window}, hot=${hot_cache_tokens}"
+  echo "Running Qwen3-14B-AWQ KVManage: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}, recent=${recent_window}, hot=${hot_cache_tokens}"
   python3 longmemeval_eval.py \
     --model "$MODEL_NAME" \
     --dataset "$DATASET" \
@@ -98,7 +98,7 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
     --continue-on-error
 
   echo
-  echo "Running Qwen3.6-27B-AWQ sliding window: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}"
+  echo "Running Qwen3-14B-AWQ sliding window: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}"
   python3 longmemeval_eval.py \
     --model "$MODEL_NAME" \
     --dataset "$DATASET" \

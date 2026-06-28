@@ -220,6 +220,25 @@ def is_oom_error(exc: BaseException) -> bool:
     return "out of memory" in text or "cuda oom" in text or "cublas_status_alloc_failed" in text
 
 
+def normalize_floating_module_dtype(model, dtype) -> None:
+    if dtype == "auto":
+        return
+    import torch
+
+    with torch.no_grad():
+        for module in model.modules():
+            for name, parameter in module._parameters.items():
+                if parameter is None or not parameter.is_floating_point():
+                    continue
+                if parameter.dtype != dtype:
+                    parameter.data = parameter.data.to(dtype=dtype)
+            for name, buffer in module._buffers.items():
+                if buffer is None or not buffer.is_floating_point():
+                    continue
+                if buffer.dtype != dtype:
+                    module._buffers[name] = buffer.to(dtype=dtype)
+
+
 def load_model(args: argparse.Namespace):
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
@@ -272,6 +291,7 @@ def load_model(args: argparse.Namespace):
         trust_remote_code=True,
         low_cpu_mem_usage=True,
     )
+    normalize_floating_module_dtype(model, torch_dtype)
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     return model, tokenizer
