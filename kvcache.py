@@ -59,6 +59,15 @@ class CompressionStats:
 
 
 @dataclass
+class WordDedupPlan:
+    source_indices: torch.Tensor
+    selected_indices: torch.Tensor
+    assignment: torch.Tensor
+    source_weights: torch.Tensor
+    group_weights: torch.Tensor
+
+
+@dataclass
 class GenerationResult:
     text: str
     prompt_tokens: int
@@ -73,25 +82,36 @@ class HotKVState:
     importance: torch.Tensor | None = None
     token_positions: torch.Tensor | None = None
     token_ids: torch.Tensor | None = None
+    word_keys: list[str | None] | None = None
+    merge_weights: torch.Tensor | None = None
 
     def align(self, length: int, device: torch.device) -> None:
         if self.importance is None or self.token_positions is None:
             self.importance = torch.zeros(length, device=device, dtype=torch.float32)
             self.token_positions = torch.arange(length, device=device, dtype=torch.long)
             self.token_ids = None
+            self.word_keys = None
+            self.merge_weights = torch.ones(length, device=device, dtype=torch.float32)
             return
         self.importance = self.importance.to(device=device, dtype=torch.float32)
         self.token_positions = self.token_positions.to(device=device, dtype=torch.long)
         if self.token_ids is not None:
             self.token_ids = self.token_ids.to(device=device, dtype=torch.long)
+        if self.merge_weights is not None:
+            self.merge_weights = self.merge_weights.to(device=device, dtype=torch.float32)
         current = int(self.importance.shape[0])
         if current == length:
+            self._align_metadata_length(length, device)
             return
         if current > length:
             self.importance = self.importance[-length:].contiguous()
             self.token_positions = self.token_positions[-length:].contiguous()
             if self.token_ids is not None:
                 self.token_ids = self.token_ids[-length:].contiguous()
+            if self.word_keys is not None:
+                self.word_keys = self.word_keys[-length:]
+            if self.merge_weights is not None:
+                self.merge_weights = self.merge_weights[-length:].contiguous()
             return
         add = length - current
         last = int(self.token_positions[-1].item()) if current else -1
@@ -108,6 +128,33 @@ class HotKVState:
             self.token_ids = torch.cat(
                 [self.token_ids, torch.full((add,), -1, device=device, dtype=torch.long)]
             )
+        if self.word_keys is not None:
+            self.word_keys.extend([None] * add)
+        if self.merge_weights is None:
+            self.merge_weights = torch.ones(current, device=device, dtype=torch.float32)
+        self.merge_weights = torch.cat(
+            [self.merge_weights, torch.ones(add, device=device, dtype=torch.float32)]
+        )
+
+    def _align_metadata_length(self, length: int, device: torch.device) -> None:
+        if self.word_keys is not None:
+            if len(self.word_keys) > length:
+                self.word_keys = self.word_keys[-length:]
+            elif len(self.word_keys) < length:
+                self.word_keys = [None] * (length - len(self.word_keys)) + self.word_keys
+        if self.merge_weights is None:
+            self.merge_weights = torch.ones(length, device=device, dtype=torch.float32)
+        elif int(self.merge_weights.shape[0]) != length:
+            if int(self.merge_weights.shape[0]) > length:
+                self.merge_weights = self.merge_weights[-length:].contiguous()
+            else:
+                add = length - int(self.merge_weights.shape[0])
+                self.merge_weights = torch.cat(
+                    [
+                        torch.ones(add, device=device, dtype=torch.float32),
+                        self.merge_weights.to(device=device, dtype=torch.float32),
+                    ]
+                )
 
     def update_from_query(
         self,
@@ -136,11 +183,32 @@ class HotKVState:
         self.token_positions = self.token_positions.index_select(0, indices).contiguous()
         if self.token_ids is not None:
             self.token_ids = self.token_ids.index_select(0, indices).contiguous()
+        if self.word_keys is not None:
+            self.word_keys = [self.word_keys[int(i)] for i in indices.detach().cpu().tolist()]
+        if self.merge_weights is not None:
+            self.merge_weights = self.merge_weights.index_select(0, indices).contiguous()
 
-    def append_token_ids(self, token_ids: torch.Tensor, device: torch.device) -> None:
+    def subset_with_merged_weights(
+        self,
+        selected_indices: torch.Tensor,
+        selected_weights: torch.Tensor,
+        recent_indices: torch.Tensor,
+    ) -> None:
+        keep_indices = torch.cat([selected_indices, recent_indices], dim=0)
+        selected_count = int(selected_indices.numel())
+        self.subset(keep_indices)
+        if self.merge_weights is not None and selected_count > 0:
+            self.merge_weights[:selected_count] = selected_weights.to(
+                device=self.merge_weights.device,
+                dtype=self.merge_weights.dtype,
+            )
+
+    def append_token_ids(self, token_ids: torch.Tensor, device: torch.device, tokenizer=None) -> None:
         token_ids = token_ids.reshape(-1).to(device=device, dtype=torch.long)
         if int(token_ids.numel()) == 0:
             return
+        new_word_keys = _token_word_keys(tokenizer, token_ids)
+        new_weights = torch.ones(int(token_ids.numel()), device=device, dtype=torch.float32)
         if self.token_ids is None:
             current = int(self.importance.shape[0]) if self.importance is not None else 0
             prefix = max(0, current - int(token_ids.numel()))
@@ -149,6 +217,10 @@ class HotKVState:
                     torch.full((prefix,), -1, device=device, dtype=torch.long),
                     token_ids,
                 ]
+            )
+            self.word_keys = [None] * prefix + new_word_keys
+            self.merge_weights = torch.cat(
+                [torch.ones(prefix, device=device, dtype=torch.float32), new_weights]
             )
             return
         self.token_ids = self.token_ids.to(device=device, dtype=torch.long)
@@ -159,13 +231,124 @@ class HotKVState:
                 self.token_ids = torch.cat(
                     [self.token_ids, torch.full((pad,), -1, device=device, dtype=torch.long)]
                 )
+                if self.word_keys is not None:
+                    self.word_keys = [None] * pad + self.word_keys
+                if self.merge_weights is not None:
+                    self.merge_weights = torch.cat(
+                        [
+                            torch.ones(pad, device=device, dtype=torch.float32),
+                            self.merge_weights.to(device=device, dtype=torch.float32),
+                        ]
+                    )
             fill = min(int(token_ids.numel()), current)
             if fill > 0 and bool((self.token_ids[-fill:] < 0).all()):
                 self.token_ids[-fill:] = token_ids[-fill:]
+                if self.word_keys is None:
+                    self.word_keys = [None] * current
+                self.word_keys[-fill:] = new_word_keys[-fill:]
+                if self.merge_weights is None:
+                    self.merge_weights = torch.ones(current, device=device, dtype=torch.float32)
+                self.merge_weights[-fill:] = 1.0
                 return
         self.token_ids = torch.cat([self.token_ids, token_ids])
+        if self.word_keys is None:
+            self.word_keys = [None] * (int(self.token_ids.shape[0]) - int(token_ids.numel()))
+        self.word_keys.extend(new_word_keys)
+        if self.merge_weights is None:
+            self.merge_weights = torch.ones(
+                int(self.token_ids.shape[0]) - int(token_ids.numel()),
+                device=device,
+                dtype=torch.float32,
+            )
+        self.merge_weights = torch.cat([self.merge_weights.to(device=device), new_weights])
         if self.importance is not None and int(self.token_ids.shape[0]) > int(self.importance.shape[0]):
             self.token_ids = self.token_ids[-int(self.importance.shape[0]) :].contiguous()
+            if self.word_keys is not None:
+                self.word_keys = self.word_keys[-int(self.importance.shape[0]) :]
+            if self.merge_weights is not None:
+                self.merge_weights = self.merge_weights[-int(self.importance.shape[0]) :].contiguous()
+
+
+_ENGLISH_WORD_RE = re.compile(r"^[A-Za-z]+(?:'[A-Za-z]+)?$")
+_COMMON_SINGLE_TOKEN_WORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "for",
+    "from",
+    "he",
+    "her",
+    "his",
+    "i",
+    "in",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "she",
+    "that",
+    "the",
+    "their",
+    "this",
+    "to",
+    "was",
+    "we",
+    "were",
+    "with",
+    "you",
+}
+
+
+def _token_word_keys(tokenizer, token_ids: torch.Tensor) -> list[str | None]:
+    ids = [int(token_id) for token_id in token_ids.reshape(-1).detach().cpu().tolist()]
+    if tokenizer is None:
+        return [None] * len(ids)
+    raw_tokens: list[str | None]
+    try:
+        converted = tokenizer.convert_ids_to_tokens(ids, skip_special_tokens=False)
+        if isinstance(converted, str):
+            raw_tokens = [converted]
+        else:
+            raw_tokens = [str(token) if token is not None else None for token in converted]
+    except Exception:
+        raw_tokens = [None] * len(ids)
+
+    keys: list[str | None] = []
+    for token_id, raw_token in zip(ids, raw_tokens):
+        try:
+            decoded = tokenizer.decode(
+                [token_id],
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+        except Exception:
+            decoded = ""
+        keys.append(_normalize_english_word_key(decoded, raw_token))
+    return keys
+
+
+def _normalize_english_word_key(decoded: str, raw_token: str | None) -> str | None:
+    if not decoded:
+        return None
+    has_boundary = decoded[:1].isspace()
+    if raw_token:
+        has_boundary = has_boundary or raw_token.startswith(("Ġ", "▁"))
+    word = decoded.replace("Ġ", " ").replace("▁", " ").strip().lower()
+    if not _ENGLISH_WORD_RE.fullmatch(word):
+        return None
+    if len(word) == 1 and word not in {"a", "i"}:
+        return None
+    if has_boundary or word in _COMMON_SINGLE_TOKEN_WORDS:
+        return word
+    return None
 
 
 def _cache_entries(past_key_values) -> list[tuple[torch.Tensor, torch.Tensor, object | None]]:
@@ -418,23 +601,25 @@ def compress_past_key_values(
 
     first_key = entries[0][0]
     old_summary = _layer_key_summary(first_key[:, :, :old_count])
-    token_dedup_indices = _select_token_dedup_indices(
+    word_dedup_plan = _build_word_dedup_plan(
         old_count=old_count,
         budget=old_budget,
         hot_state=hot_state,
         device=first_key.device,
     )
-    if int(token_dedup_indices.numel()) > 0:
-        hot_raw_indices = token_dedup_indices[:hot_raw_budget]
-        hot_cluster_selected = token_dedup_indices[hot_raw_budget:hot_budget]
+    if word_dedup_plan is not None:
+        selected_indices = word_dedup_plan.selected_indices
+        hot_raw_indices = selected_indices[:hot_raw_budget]
+        hot_cluster_selected = selected_indices[hot_raw_budget:hot_budget]
         hot_cluster_source_indices = hot_cluster_selected
-        cold_selected = token_dedup_indices[hot_budget:]
+        cold_selected = selected_indices[hot_budget:]
         cold_indices = cold_selected
         hot_cluster_assignment = torch.arange(
             int(hot_cluster_selected.numel()), device=first_key.device, dtype=torch.long
         )
         assignment = torch.arange(int(cold_selected.numel()), device=first_key.device, dtype=torch.long)
-        hot_pool_indices = token_dedup_indices[:hot_budget]
+        hot_pool_indices = selected_indices[:hot_budget]
+        selected_weights = word_dedup_plan.group_weights
     else:
         hot_pool_indices = _select_hot_indices(
             old_count=old_count,
@@ -479,6 +664,13 @@ def compress_past_key_values(
             ).to(torch.long)
         else:
             assignment = torch.empty(0, device=first_key.device, dtype=torch.long)
+        selected_weights = torch.ones(
+            int(hot_raw_indices.numel())
+            + int(hot_cluster_selected.numel())
+            + int(cold_selected.numel()),
+            device=first_key.device,
+            dtype=torch.float32,
+        )
 
     compressed_layers = []
     hot_merged_tokens = max(
@@ -486,69 +678,88 @@ def compress_past_key_values(
         int(hot_cluster_source_indices.numel()) - int(hot_cluster_selected.numel()),
     )
     merged_tokens = max(0, int(cold_indices.numel()) - int(cold_selected.numel()))
+    if word_dedup_plan is not None:
+        word_merged_tokens = int(word_dedup_plan.source_indices.numel()) - int(
+            word_dedup_plan.selected_indices.numel()
+        )
+        hot_merged_tokens = word_merged_tokens
+        merged_tokens = 0
     for key, value, _layer in entries:
-        hot_raw_key = (
-            key.index_select(2, hot_raw_indices.to(key.device))
-            if hot_raw_indices.numel()
-            else key[:, :, :0]
-        )
-        hot_raw_value = (
-            value.index_select(2, hot_raw_indices.to(value.device))
-            if hot_raw_indices.numel()
-            else value[:, :, :0]
-        )
-        if int(hot_cluster_selected.numel()) > 0:
-            hot_cluster_key = _merge_subset_by_assignment(
+        if word_dedup_plan is not None:
+            old_key = _merge_subset_by_assignment(
                 key,
-                source_indices=hot_cluster_source_indices,
-                selected_indices=hot_cluster_selected,
-                assignment=hot_cluster_assignment,
+                source_indices=word_dedup_plan.source_indices,
+                selected_indices=word_dedup_plan.selected_indices,
+                assignment=word_dedup_plan.assignment,
+                source_weights=word_dedup_plan.source_weights,
             )
-            hot_cluster_value = _merge_subset_by_assignment(
+            old_value = _merge_subset_by_assignment(
                 value,
-                source_indices=hot_cluster_source_indices,
-                selected_indices=hot_cluster_selected,
-                assignment=hot_cluster_assignment,
+                source_indices=word_dedup_plan.source_indices,
+                selected_indices=word_dedup_plan.selected_indices,
+                assignment=word_dedup_plan.assignment,
+                source_weights=word_dedup_plan.source_weights,
             )
         else:
-            hot_cluster_key = key[:, :, :0]
-            hot_cluster_value = value[:, :, :0]
-        hot_key = torch.cat([hot_raw_key, hot_cluster_key], dim=2)
-        hot_value = (
-            torch.cat([hot_raw_value, hot_cluster_value], dim=2)
-        )
-        if int(cold_selected.numel()) > 0:
-            cold_key = _merge_subset_by_assignment(
-                key,
-                source_indices=cold_indices,
-                selected_indices=cold_selected,
-                assignment=assignment,
+            hot_raw_key = (
+                key.index_select(2, hot_raw_indices.to(key.device))
+                if hot_raw_indices.numel()
+                else key[:, :, :0]
             )
-            cold_value = _merge_subset_by_assignment(
-                value,
-                source_indices=cold_indices,
-                selected_indices=cold_selected,
-                assignment=assignment,
+            hot_raw_value = (
+                value.index_select(2, hot_raw_indices.to(value.device))
+                if hot_raw_indices.numel()
+                else value[:, :, :0]
             )
-        else:
-            cold_key = key[:, :, :0]
-            cold_value = value[:, :, :0]
+            if int(hot_cluster_selected.numel()) > 0:
+                hot_cluster_key = _merge_subset_by_assignment(
+                    key,
+                    source_indices=hot_cluster_source_indices,
+                    selected_indices=hot_cluster_selected,
+                    assignment=hot_cluster_assignment,
+                )
+                hot_cluster_value = _merge_subset_by_assignment(
+                    value,
+                    source_indices=hot_cluster_source_indices,
+                    selected_indices=hot_cluster_selected,
+                    assignment=hot_cluster_assignment,
+                )
+            else:
+                hot_cluster_key = key[:, :, :0]
+                hot_cluster_value = value[:, :, :0]
+            hot_key = torch.cat([hot_raw_key, hot_cluster_key], dim=2)
+            hot_value = torch.cat([hot_raw_value, hot_cluster_value], dim=2)
+            if int(cold_selected.numel()) > 0:
+                cold_key = _merge_subset_by_assignment(
+                    key,
+                    source_indices=cold_indices,
+                    selected_indices=cold_selected,
+                    assignment=assignment,
+                )
+                cold_value = _merge_subset_by_assignment(
+                    value,
+                    source_indices=cold_indices,
+                    selected_indices=cold_selected,
+                    assignment=assignment,
+                )
+            else:
+                cold_key = key[:, :, :0]
+                cold_value = value[:, :, :0]
+            old_key = torch.cat([hot_key, cold_key], dim=2)
+            old_value = torch.cat([hot_value, cold_value], dim=2)
         recent_key = key[:, :, -recent:]
         recent_value = value[:, :, -recent:]
         compressed_layers.append(
             (
-                torch.cat([hot_key, cold_key, recent_key], dim=2).contiguous(),
-                torch.cat([hot_value, cold_value, recent_value], dim=2).contiguous(),
+                torch.cat([old_key, recent_key], dim=2).contiguous(),
+                torch.cat([old_value, recent_value], dim=2).contiguous(),
             )
         )
 
     if hot_state is not None:
         recent_indices = torch.arange(old_count, seq_len, device=first_key.device)
-        keep_indices = torch.cat(
-            [hot_raw_indices, hot_cluster_selected, cold_selected, recent_indices],
-            dim=0,
-        )
-        hot_state.subset(keep_indices)
+        selected_indices = torch.cat([hot_raw_indices, hot_cluster_selected, cold_selected], dim=0)
+        hot_state.subset_with_merged_weights(selected_indices, selected_weights, recent_indices)
 
     kept = _cache_seq_len(tuple(compressed_layers))
     if stats is not None:
@@ -569,23 +780,31 @@ def _merge_subset_by_assignment(
     source_indices: torch.Tensor,
     selected_indices: torch.Tensor,
     assignment: torch.Tensor,
+    source_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     groups = int(selected_indices.shape[0])
     if groups == 0:
         return tensor[:, :, :0]
     source = tensor.index_select(2, source_indices.to(tensor.device))
+    if source_weights is not None:
+        weights = source_weights.to(device=source.device, dtype=source.dtype).view(1, 1, -1, 1)
+        source = source * weights
     out = torch.zeros(
         (*source.shape[:2], groups, source.shape[-1]),
         device=source.device,
         dtype=source.dtype,
     )
     out.index_add_(2, assignment.to(source.device), source)
-    counts = torch.bincount(assignment.to(source.device), minlength=groups).to(
-        device=source.device,
-        dtype=source.dtype,
-    )
-    empty = counts == 0
-    out = out / counts.clamp_min(1).view(1, 1, groups, 1)
+    if source_weights is None:
+        divisors = torch.bincount(assignment.to(source.device), minlength=groups).to(
+            device=source.device,
+            dtype=source.dtype,
+        )
+    else:
+        divisors = torch.zeros(groups, device=source.device, dtype=source.dtype)
+        divisors.index_add_(0, assignment.to(source.device), source_weights.to(source.device, source.dtype))
+    empty = divisors == 0
+    out = out / divisors.clamp_min(1).view(1, 1, groups, 1)
     if bool(empty.any()):
         empty_idx = torch.nonzero(empty, as_tuple=False).flatten()
         fallback = tensor.index_select(2, selected_indices.to(tensor.device).index_select(0, empty_idx))
@@ -617,37 +836,89 @@ def _select_hot_indices(
     return torch.topk(scores, k=take, largest=True).indices
 
 
-def _select_token_dedup_indices(
+def _build_word_dedup_plan(
     old_count: int,
     budget: int,
     hot_state: HotKVState | None,
     device: torch.device,
-) -> torch.Tensor:
+) -> WordDedupPlan | None:
     if old_count <= 0 or budget <= 0:
-        return torch.empty(0, device=device, dtype=torch.long)
-    if hot_state is None or hot_state.token_ids is None:
-        return torch.empty(0, device=device, dtype=torch.long)
-    token_ids = hot_state.token_ids[:old_count].to(device=device, dtype=torch.long)
-    if int(token_ids.numel()) < old_count:
-        return torch.empty(0, device=device, dtype=torch.long)
-    min_repeats = max(2, int(os.environ.get("TOKEN_DEDUP_MIN_REPEATS", "16")))
-    keep_per_id = max(1, int(os.environ.get("TOKEN_DEDUP_KEEP_PER_ID", "4")))
-    positions_by_token: dict[int, list[int]] = {}
-    for idx, token_id in enumerate(token_ids.tolist()):
-        if token_id < 0:
+        return None
+    if hot_state is None or hot_state.word_keys is None:
+        return None
+    word_keys = hot_state.word_keys[:old_count]
+    if len(word_keys) < old_count:
+        return None
+    min_repeats = max(
+        2,
+        int(os.environ.get("WORD_DEDUP_MIN_REPEATS", os.environ.get("TOKEN_DEDUP_MIN_REPEATS", "2"))),
+    )
+    base_weights = (
+        hot_state.merge_weights[:old_count].to(device=device, dtype=torch.float32)
+        if hot_state.merge_weights is not None and int(hot_state.merge_weights.numel()) >= old_count
+        else torch.ones(old_count, device=device, dtype=torch.float32)
+    )
+
+    positions_by_word: dict[str, list[int]] = {}
+    for idx, word_key in enumerate(word_keys):
+        if word_key is None:
             continue
-        positions_by_token.setdefault(int(token_id), []).append(idx)
-    if not positions_by_token:
-        return torch.empty(0, device=device, dtype=torch.long)
-    selected = []
-    for positions in positions_by_token.values():
+        positions_by_word.setdefault(word_key, []).append(idx)
+    if not positions_by_word:
+        return None
+
+    source_by_rep: dict[int, list[int]] = {}
+    for idx, word_key in enumerate(word_keys):
+        if word_key is None:
+            source_by_rep[idx] = [idx]
+            continue
+        positions = positions_by_word.get(word_key, [])
         if len(positions) >= min_repeats:
-            selected.extend(positions[-keep_per_id:])
+            rep = positions[-1]
+            if idx == rep:
+                source_by_rep[rep] = positions
         else:
-            selected.extend(positions)
-    selected = sorted(selected)
-    selected = selected[-min(budget, len(selected)) :]
-    return torch.tensor(selected, device=device, dtype=torch.long)
+            source_by_rep[idx] = [idx]
+
+    if not source_by_rep:
+        return None
+    selected = sorted(source_by_rep)
+    if len(selected) > budget:
+        return None
+    selected_set = set(selected)
+    if not selected:
+        return None
+
+    source_indices_list: list[int] = []
+    assignment_list: list[int] = []
+    source_weights_list: list[float] = []
+    group_weights_list: list[float] = []
+    for group_idx, rep in enumerate(selected):
+        sources = [src for src in source_by_rep[rep] if src < old_count]
+        if not sources:
+            continue
+        for src in sources:
+            source_indices_list.append(src)
+            assignment_list.append(group_idx)
+            source_weights_list.append(float(base_weights[src].item()))
+        group_weights_list.append(float(base_weights[sources].sum().item()))
+
+    if len(group_weights_list) != len(selected_set):
+        selected = selected[: len(group_weights_list)]
+    if not source_indices_list:
+        return None
+    if len(source_indices_list) == len(selected) and all(
+        src == rep for src, rep in zip(source_indices_list, selected)
+    ):
+        return None
+
+    return WordDedupPlan(
+        source_indices=torch.tensor(source_indices_list, device=device, dtype=torch.long),
+        selected_indices=torch.tensor(selected, device=device, dtype=torch.long),
+        assignment=torch.tensor(assignment_list, device=device, dtype=torch.long),
+        source_weights=torch.tensor(source_weights_list, device=device, dtype=torch.float32),
+        group_weights=torch.tensor(group_weights_list, device=device, dtype=torch.float32),
+    )
 
 
 def _select_hot_cluster_representatives(
@@ -1094,7 +1365,11 @@ def generate_with_budgeted_kv_from_input_ids(
             update_strength=importance_update,
         )
         entries = _cache_entries(past_key_values)
-        hot_state.append_token_ids(chunk[0], entries[0][0].device if entries else device)
+        hot_state.append_token_ids(
+            chunk[0],
+            entries[0][0].device if entries else device,
+            tokenizer=tokenizer,
+        )
         prefill_chunks_seen += 1
         should_compress = (
             prefill_chunks_seen % compress_every == 0
@@ -1195,6 +1470,7 @@ def generate_with_budgeted_kv_from_input_ids(
         hot_state.append_token_ids(
             next_token.reshape(-1),
             entries[0][0].device if entries else device,
+            tokenizer=tokenizer,
         )
         decode_steps_seen += 1
         should_compress = (
