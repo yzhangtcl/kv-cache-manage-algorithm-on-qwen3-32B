@@ -3,7 +3,7 @@ set -euo pipefail
 
 MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/models/Qwen3.6-27B-AWQ}"
 DATASET="${DATASET:-data/longmemeval_s_cleaned.json}"
-OUTPUT_DIR="${OUTPUT_DIR:-/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_100k_cache_sweep}"
+OUTPUT_DIR="${OUTPUT_DIR:-/root/autodl-tmp/kvcache_outputs/qwen3_6_27b_longmemeval_s_compare}"
 ARTIFACTS_DIR="${ARTIFACTS_DIR:-$OUTPUT_DIR/artifacts}"
 LIMIT="${LIMIT:-0}"
 MAX_GPU_MEMORY="${MAX_GPU_MEMORY:-22GiB}"
@@ -22,8 +22,19 @@ MERGE_SIMILARITY="${MERGE_SIMILARITY:-0.90}"
 ATTENTION_DECAY="${ATTENTION_DECAY:-0.995}"
 ROPE_FACTOR="${ROPE_FACTOR:-4.0}"
 ROPE_THETA="${ROPE_THETA:-1000000.0}"
+DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-${DEEPSEEK_JUDGE_MODEL:-deepseek-chat}}"
+JUDGE_LIMIT="${JUDGE_LIMIT:-0}"
+JUDGE_SLEEP_SEC="${JUDGE_SLEEP_SEC:-0}"
+
+if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+  echo "DEEPSEEK_API_KEY is not set. Run: export DEEPSEEK_API_KEY=\"your_deepseek_api_key\"" >&2
+  exit 1
+fi
 
 mkdir -p "$OUTPUT_DIR" "$ARTIFACTS_DIR"
+
+hypotheses=()
+mode_labels=()
 
 for cache_tokens in $KV_CACHE_TOKENS_LIST; do
   if (( cache_tokens <= 0 )); then
@@ -49,11 +60,11 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
     cache_label="$cache_tokens"
   fi
 
-  mode_label="kvmanage_${cache_label}"
+  kv_label="kvmanage_${cache_label}"
+  sliding_label="sliding_window_${cache_label}"
 
   echo
-  echo "Running Qwen3.6-27B-AWQ LongMemEval-S: input=${MAX_RETRIEVAL_TOKENS} tokens, cache=${cache_tokens}, recent=${recent_window}, hot=${hot_cache_tokens}"
-
+  echo "Running Qwen3.6-27B-AWQ KVManage: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}, recent=${recent_window}, hot=${hot_cache_tokens}"
   python3 longmemeval_eval.py \
     --model "$MODEL_NAME" \
     --dataset "$DATASET" \
@@ -65,7 +76,7 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
     --max-cpu-memory "$MAX_CPU_MEMORY" \
     --offload-folder /root/autodl-tmp/offload \
     --mode kvmanage \
-    --mode-label "$mode_label" \
+    --mode-label "$kv_label" \
     --limit "$LIMIT" \
     --history-format json \
     --reading-method con \
@@ -85,16 +96,61 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
     --rope-theta "$ROPE_THETA" \
     --resume \
     --continue-on-error
+
+  echo
+  echo "Running Qwen3.6-27B-AWQ sliding window: input=${MAX_RETRIEVAL_TOKENS}, cache=${cache_tokens}"
+  python3 longmemeval_eval.py \
+    --model "$MODEL_NAME" \
+    --dataset "$DATASET" \
+    --output-dir "$OUTPUT_DIR" \
+    --artifacts-dir "$ARTIFACTS_DIR" \
+    --dtype "$DTYPE" \
+    --device auto \
+    --max-gpu-memory "$MAX_GPU_MEMORY" \
+    --max-cpu-memory "$MAX_CPU_MEMORY" \
+    --offload-folder /root/autodl-tmp/offload \
+    --mode sliding \
+    --mode-label "$sliding_label" \
+    --limit "$LIMIT" \
+    --history-format json \
+    --reading-method con \
+    --topk-context 1000 \
+    --max-retrieval-tokens "$MAX_RETRIEVAL_TOKENS" \
+    --max-new-tokens "$MAX_NEW_TOKENS" \
+    --prefill-chunk-tokens "$PREFILL_CHUNK_TOKENS" \
+    --sliding-cache-tokens "$cache_tokens" \
+    --merge-similarity "$MERGE_SIMILARITY" \
+    --attention-decay "$ATTENTION_DECAY" \
+    --compress-every "$COMPRESS_EVERY" \
+    --rope-factor "$ROPE_FACTOR" \
+    --rope-theta "$ROPE_THETA" \
+    --resume \
+    --continue-on-error
+
+  hypotheses+=("$OUTPUT_DIR/${kv_label}.jsonl" "$OUTPUT_DIR/${sliding_label}.jsonl")
+  mode_labels+=("$kv_label" "$sliding_label")
 done
 
 echo
-echo "Outputs:"
+echo "Judging KVManage and sliding window outputs with DeepSeek"
+python3 longmemeval_deepseek_judge.py \
+  --reference "$DATASET" \
+  --hypothesis "${hypotheses[@]}" \
+  --mode-labels "${mode_labels[@]}" \
+  --output-csv "$OUTPUT_DIR/deepseek_judge.csv" \
+  --summary-csv "$OUTPUT_DIR/deepseek_judge_summary.csv" \
+  --model "$DEEPSEEK_MODEL" \
+  --limit "$JUDGE_LIMIT" \
+  --sleep-sec "$JUDGE_SLEEP_SEC" \
+  --resume
+
+echo
+echo "Wrote:"
 echo "- $OUTPUT_DIR/runs.csv"
-for cache_tokens in $KV_CACHE_TOKENS_LIST; do
-  if (( cache_tokens % 1000 == 0 )); then
-    cache_label="$((cache_tokens / 1000))k"
-  else
-    cache_label="$cache_tokens"
-  fi
-  echo "- $OUTPUT_DIR/kvmanage_${cache_label}.jsonl"
+for hypothesis in "${hypotheses[@]}"; do
+  echo "- $hypothesis"
 done
+echo "- $OUTPUT_DIR/deepseek_judge.csv"
+echo "- $OUTPUT_DIR/deepseek_judge_summary.csv"
+echo
+cat "$OUTPUT_DIR/deepseek_judge_summary.csv"

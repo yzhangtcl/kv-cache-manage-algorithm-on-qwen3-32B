@@ -149,9 +149,11 @@ def build_prompt(
 
 
 def output_mode_name(args: argparse.Namespace, mode: str) -> str:
+    if args.mode_label:
+        return args.mode_label
     if mode == "sliding":
         return "sliding_window"
-    return args.mode_label or mode
+    return mode
 
 
 def modes_to_run(mode: str) -> list[str]:
@@ -230,6 +232,10 @@ def load_model(args: argparse.Namespace):
     }[args.dtype]
 
     config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
+    if torch_dtype != "auto":
+        config.torch_dtype = torch_dtype
+        if hasattr(config, "dtype"):
+            config.dtype = torch_dtype
     if args.rope_factor > 0:
         original = args.rope_original_max_position_embeddings
         config.rope_theta = float(args.rope_theta)
@@ -375,7 +381,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sliding-cache-tokens", type=int, default=4096)
     parser.add_argument("--merge-similarity", type=float, default=0.90)
     parser.add_argument("--attention-decay", type=float, default=0.995)
-    parser.add_argument("--importance-update", type=float, default=0.0)
+    parser.add_argument("--importance-update", type=float, default=0.02)
     parser.add_argument("--compress-every", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=0)
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
