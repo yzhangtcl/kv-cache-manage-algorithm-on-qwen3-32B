@@ -232,6 +232,7 @@ def load_model(args: argparse.Namespace):
     config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
     if args.rope_factor > 0:
         original = args.rope_original_max_position_embeddings
+        config.rope_theta = float(args.rope_theta)
         config.rope_scaling = {
             "rope_type": "yarn",
             "factor": float(args.rope_factor),
@@ -386,6 +387,7 @@ def parse_args() -> argparse.Namespace:
         default=4.0,
         help="Set 0 to disable YaRN. Qwen3 uses factor 4 for about 131k tokens.",
     )
+    parser.add_argument("--rope-theta", type=float, default=1000000.0)
     parser.add_argument("--rope-original-max-position-embeddings", type=int, default=32768)
     return parser.parse_args()
 
