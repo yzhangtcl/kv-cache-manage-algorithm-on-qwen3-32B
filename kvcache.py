@@ -6,7 +6,7 @@ import re
 import os
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 import torch
@@ -14,6 +14,10 @@ import torch
 
 PastKeyValues = tuple[tuple[torch.Tensor, torch.Tensor], ...]
 _WORD_PATTERN_RE = re.compile(r"(?u)\b[^\W_]+(?:['-][^\W_]+)*\b")
+
+
+def _word_dedup_enabled() -> bool:
+    return os.environ.get("WORD_DEDUP_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -88,17 +92,23 @@ class HotKVState:
     importance: torch.Tensor | None = None
     token_positions: torch.Tensor | None = None
     token_ids: torch.Tensor | None = None
+    word_ids: torch.Tensor | None = None
+    word_keys: dict[int, str] = field(default_factory=dict)
+    next_word_id: int = 0
 
     def align(self, length: int, device: torch.device) -> None:
         if self.importance is None or self.token_positions is None:
             self.importance = torch.zeros(length, device=device, dtype=torch.float32)
             self.token_positions = torch.arange(length, device=device, dtype=torch.long)
             self.token_ids = None
+            self.word_ids = None
             return
         self.importance = self.importance.to(device=device, dtype=torch.float32)
         self.token_positions = self.token_positions.to(device=device, dtype=torch.long)
         if self.token_ids is not None:
             self.token_ids = self.token_ids.to(device=device, dtype=torch.long)
+        if self.word_ids is not None:
+            self.word_ids = self.word_ids.to(device=device, dtype=torch.long)
         current = int(self.importance.shape[0])
         if current == length:
             return
@@ -107,6 +117,9 @@ class HotKVState:
             self.token_positions = self.token_positions[-length:].contiguous()
             if self.token_ids is not None:
                 self.token_ids = self.token_ids[-length:].contiguous()
+            if self.word_ids is not None:
+                self.word_ids = self.word_ids[-length:].contiguous()
+                self._prune_word_keys()
             return
         add = length - current
         last = int(self.token_positions[-1].item()) if current else -1
@@ -122,6 +135,10 @@ class HotKVState:
         if self.token_ids is not None:
             self.token_ids = torch.cat(
                 [self.token_ids, torch.full((add,), -1, device=device, dtype=torch.long)]
+            )
+        if self.word_ids is not None:
+            self.word_ids = torch.cat(
+                [self.word_ids, torch.full((add,), -1, device=device, dtype=torch.long)]
             )
 
     def update_from_query(
@@ -151,11 +168,19 @@ class HotKVState:
         self.token_positions = self.token_positions.index_select(0, indices).contiguous()
         if self.token_ids is not None:
             self.token_ids = self.token_ids.index_select(0, indices).contiguous()
+        if self.word_ids is not None:
+            self.word_ids = self.word_ids.index_select(0, indices).contiguous()
+            self._prune_word_keys()
 
-    def append_token_ids(self, token_ids: torch.Tensor, device: torch.device) -> None:
+    def append_token_ids(self, token_ids: torch.Tensor, device: torch.device, tokenizer=None) -> None:
         token_ids = token_ids.reshape(-1).to(device=device, dtype=torch.long)
         if int(token_ids.numel()) == 0:
             return
+        new_word_ids = (
+            self._build_word_ids_for_tokens(token_ids, device, tokenizer)
+            if _word_dedup_enabled()
+            else torch.full((int(token_ids.numel()),), -1, device=device, dtype=torch.long)
+        )
         if self.token_ids is None:
             current = int(self.importance.shape[0]) if self.importance is not None else 0
             prefix = max(0, current - int(token_ids.numel()))
@@ -165,8 +190,20 @@ class HotKVState:
                     token_ids,
                 ]
             )
+            self.word_ids = torch.cat(
+                [
+                    torch.full((prefix,), -1, device=device, dtype=torch.long),
+                    new_word_ids,
+                ]
+            )
             return
         self.token_ids = self.token_ids.to(device=device, dtype=torch.long)
+        if self.word_ids is None:
+            self.word_ids = torch.full(
+                (int(self.token_ids.shape[0]),), -1, device=device, dtype=torch.long
+            )
+        else:
+            self.word_ids = self.word_ids.to(device=device, dtype=torch.long)
         if self.importance is not None:
             current = int(self.importance.shape[0])
             if int(self.token_ids.shape[0]) < current:
@@ -174,13 +211,89 @@ class HotKVState:
                 self.token_ids = torch.cat(
                     [self.token_ids, torch.full((pad,), -1, device=device, dtype=torch.long)]
                 )
+                self.word_ids = torch.cat(
+                    [self.word_ids, torch.full((pad,), -1, device=device, dtype=torch.long)]
+                )
             fill = min(int(token_ids.numel()), current)
             if fill > 0 and bool((self.token_ids[-fill:] < 0).all()):
                 self.token_ids[-fill:] = token_ids[-fill:]
+                self.word_ids[-fill:] = new_word_ids[-fill:]
                 return
         self.token_ids = torch.cat([self.token_ids, token_ids])
+        self.word_ids = torch.cat([self.word_ids, new_word_ids])
         if self.importance is not None and int(self.token_ids.shape[0]) > int(self.importance.shape[0]):
             self.token_ids = self.token_ids[-int(self.importance.shape[0]) :].contiguous()
+            self.word_ids = self.word_ids[-int(self.importance.shape[0]) :].contiguous()
+            self._prune_word_keys()
+
+    def _build_word_ids_for_tokens(
+        self,
+        token_ids: torch.Tensor,
+        device: torch.device,
+        tokenizer,
+    ) -> torch.Tensor:
+        count = int(token_ids.numel())
+        word_ids = torch.full((count,), -1, device=device, dtype=torch.long)
+        if tokenizer is None or count == 0:
+            return word_ids
+        pieces: list[str] = []
+        token_char_spans: list[tuple[int, int]] = []
+        cursor = 0
+        for token_id in token_ids.detach().cpu().tolist():
+            if int(token_id) < 0:
+                piece = ""
+            else:
+                try:
+                    piece = tokenizer.decode(
+                        [int(token_id)],
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False,
+                    )
+                except TypeError:
+                    piece = tokenizer.decode([int(token_id)], skip_special_tokens=True)
+            start = cursor
+            cursor += len(piece)
+            token_char_spans.append((start, cursor))
+            pieces.append(piece)
+
+        text = "".join(pieces)
+        if not text:
+            return word_ids
+
+        min_word_chars = max(1, int(os.environ.get("WORD_DEDUP_MIN_WORD_CHARS", "1")))
+        token_cursor = 0
+        for match in _WORD_PATTERN_RE.finditer(text):
+            normalized = match.group(0).casefold()
+            if len(normalized) < min_word_chars:
+                continue
+            start_char, end_char = match.span()
+            while token_cursor < count and token_char_spans[token_cursor][1] <= start_char:
+                token_cursor += 1
+            token_start = token_cursor
+            token_end = token_start
+            while token_end < count and token_char_spans[token_end][0] < end_char:
+                token_end += 1
+            if token_start >= token_end:
+                continue
+            word_id = self.next_word_id
+            self.next_word_id += 1
+            self.word_keys[word_id] = normalized
+            word_ids[token_start:token_end] = word_id
+        return word_ids
+
+    def _prune_word_keys(self) -> None:
+        if self.word_ids is None or not self.word_keys:
+            return
+        used = {
+            int(word_id)
+            for word_id in self.word_ids.detach().cpu().tolist()
+            if int(word_id) >= 0
+        }
+        self.word_keys = {
+            word_id: word_key
+            for word_id, word_key in self.word_keys.items()
+            if word_id in used
+        }
 
 
 def _cache_entries(past_key_values) -> list[tuple[torch.Tensor, torch.Tensor, object | None]]:
@@ -662,23 +775,22 @@ def _select_word_pattern_dedup_indices(
     current_position: int | None,
     attention_decay: float,
 ) -> PatternDedupResult | None:
-    if os.environ.get("WORD_DEDUP_ENABLED", "0").lower() not in {"1", "true", "yes", "on"}:
+    if not _word_dedup_enabled():
         return None
     if old_count <= 0 or budget <= 0:
         return None
-    if tokenizer is None or hot_state is None or hot_state.token_ids is None:
+    if hot_state is None or hot_state.word_ids is None:
         return None
-    token_ids = hot_state.token_ids[:old_count].to(device=device, dtype=torch.long)
-    if int(token_ids.numel()) < old_count:
+    word_ids = hot_state.word_ids[:old_count].to(device=device, dtype=torch.long)
+    if int(word_ids.numel()) < old_count:
         return None
 
     pattern_words = max(1, int(os.environ.get("WORD_DEDUP_PATTERN_WORDS", "4")))
     min_repeats = max(2, int(os.environ.get("WORD_DEDUP_MIN_REPEATS", "2")))
     keep_per_pattern = max(1, int(os.environ.get("WORD_DEDUP_KEEP_PER_PATTERN", "1")))
     boost_strength = max(0.0, float(os.environ.get("WORD_DEDUP_BOOST", "2.0")))
-    min_word_chars = max(1, int(os.environ.get("WORD_DEDUP_MIN_WORD_CHARS", "1")))
 
-    words = _decode_word_spans(token_ids.tolist(), tokenizer, min_word_chars=min_word_chars)
+    words = _word_spans_from_state(word_ids.tolist(), hot_state.word_keys)
     if len(words) < pattern_words:
         return None
 
@@ -738,6 +850,28 @@ def _select_word_pattern_dedup_indices(
     return PatternDedupResult(indices=selected, redundant=redundant, boost=boost)
 
 
+def _word_spans_from_state(
+    word_ids: list[int],
+    word_keys: dict[int, str],
+) -> list[WordSpan]:
+    words: list[WordSpan] = []
+    idx = 0
+    count = len(word_ids)
+    while idx < count:
+        word_id = int(word_ids[idx])
+        if word_id < 0:
+            idx += 1
+            continue
+        token_start = idx
+        idx += 1
+        while idx < count and int(word_ids[idx]) == word_id:
+            idx += 1
+        word_key = word_keys.get(word_id)
+        if word_key:
+            words.append(WordSpan(word_key, token_start, idx))
+    return words
+
+
 def _trim_pattern_selection_to_budget(
     selected: torch.Tensor,
     boost: torch.Tensor,
@@ -765,54 +899,6 @@ def _trim_pattern_selection_to_budget(
         return torch.empty(0, device=device, dtype=torch.long)
     top_relative = torch.topk(scores, k=take, largest=True).indices
     return selected.index_select(0, top_relative)
-
-
-def _decode_word_spans(
-    token_ids: list[int],
-    tokenizer,
-    min_word_chars: int,
-) -> list[WordSpan]:
-    pieces: list[str] = []
-    token_char_spans: list[tuple[int, int]] = []
-    cursor = 0
-    for token_id in token_ids:
-        if token_id < 0:
-            piece = ""
-        else:
-            try:
-                piece = tokenizer.decode(
-                    [int(token_id)],
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False,
-                )
-            except TypeError:
-                piece = tokenizer.decode([int(token_id)], skip_special_tokens=True)
-        start = cursor
-        cursor += len(piece)
-        token_char_spans.append((start, cursor))
-        pieces.append(piece)
-
-    text = "".join(pieces)
-    if not text:
-        return []
-
-    words: list[WordSpan] = []
-    token_cursor = 0
-    token_count = len(token_char_spans)
-    for match in _WORD_PATTERN_RE.finditer(text):
-        normalized = match.group(0).casefold()
-        if len(normalized) < min_word_chars:
-            continue
-        start_char, end_char = match.span()
-        while token_cursor < token_count and token_char_spans[token_cursor][1] <= start_char:
-            token_cursor += 1
-        token_start = token_cursor
-        token_end = token_start
-        while token_end < token_count and token_char_spans[token_end][0] < end_char:
-            token_end += 1
-        if token_start < token_end:
-            words.append(WordSpan(normalized, token_start, token_end))
-    return words
 
 
 def _select_hot_cluster_representatives(
@@ -1040,6 +1126,7 @@ def budgeted_kv_cache(
             hot_state.append_token_ids(
                 input_ids.reshape(-1),
                 entries[0][0].device if entries else input_ids.device,
+                tokenizer=tokenizer,
             )
         calls += 1
         if calls % compress_every == 0 or cache_tokens > max_cache_tokens * compress_every:
@@ -1270,7 +1357,11 @@ def generate_with_budgeted_kv_from_input_ids(
             update_strength=importance_update,
         )
         entries = _cache_entries(past_key_values)
-        hot_state.append_token_ids(chunk[0], entries[0][0].device if entries else device)
+        hot_state.append_token_ids(
+            chunk[0],
+            entries[0][0].device if entries else device,
+            tokenizer=tokenizer,
+        )
         prefill_chunks_seen += 1
         should_compress = (
             prefill_chunks_seen % compress_every == 0
@@ -1373,6 +1464,7 @@ def generate_with_budgeted_kv_from_input_ids(
         hot_state.append_token_ids(
             next_token.reshape(-1),
             entries[0][0].device if entries else device,
+            tokenizer=tokenizer,
         )
         decode_steps_seen += 1
         should_compress = (
