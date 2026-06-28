@@ -654,6 +654,8 @@ def _select_word_pattern_dedup_indices(
     current_position: int | None,
     attention_decay: float,
 ) -> PatternDedupResult | None:
+    if os.environ.get("WORD_DEDUP_ENABLED", "0").lower() not in {"1", "true", "yes", "on"}:
+        return None
     if old_count <= 0 or budget <= 0:
         return None
     if tokenizer is None or hot_state is None or hot_state.token_ids is None:
