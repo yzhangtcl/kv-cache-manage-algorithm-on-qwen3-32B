@@ -610,6 +610,10 @@ def _merge_subset_by_assignment(
     groups = int(selected_indices.shape[0])
     if groups == 0:
         return tensor[:, :, :0]
+    # For RoPE models, averaging K/V vectors from different absolute positions can
+    # create invalid cache states and trigger severe generation degeneration.
+    # Keep representative tokens exactly; assignment is still used for stats/state.
+    return tensor.index_select(2, selected_indices.to(tensor.device))
     source = tensor.index_select(2, source_indices.to(tensor.device))
     out = torch.zeros(
         (*source.shape[:2], groups, source.shape[-1]),
