@@ -71,20 +71,26 @@ class GenerationResult:
 class HotKVState:
     importance: torch.Tensor | None = None
     token_positions: torch.Tensor | None = None
+    token_ids: torch.Tensor | None = None
 
     def align(self, length: int, device: torch.device) -> None:
         if self.importance is None or self.token_positions is None:
             self.importance = torch.zeros(length, device=device, dtype=torch.float32)
             self.token_positions = torch.arange(length, device=device, dtype=torch.long)
+            self.token_ids = None
             return
         self.importance = self.importance.to(device=device, dtype=torch.float32)
         self.token_positions = self.token_positions.to(device=device, dtype=torch.long)
+        if self.token_ids is not None:
+            self.token_ids = self.token_ids.to(device=device, dtype=torch.long)
         current = int(self.importance.shape[0])
         if current == length:
             return
         if current > length:
             self.importance = self.importance[-length:].contiguous()
             self.token_positions = self.token_positions[-length:].contiguous()
+            if self.token_ids is not None:
+                self.token_ids = self.token_ids[-length:].contiguous()
             return
         add = length - current
         last = int(self.token_positions[-1].item()) if current else -1
@@ -97,6 +103,10 @@ class HotKVState:
                 torch.arange(last + 1, last + 1 + add, device=device, dtype=torch.long),
             ]
         )
+        if self.token_ids is not None:
+            self.token_ids = torch.cat(
+                [self.token_ids, torch.full((add,), -1, device=device, dtype=torch.long)]
+            )
 
     def update_from_query(
         self,
@@ -123,6 +133,38 @@ class HotKVState:
         indices = indices.to(self.importance.device)
         self.importance = self.importance.index_select(0, indices).contiguous()
         self.token_positions = self.token_positions.index_select(0, indices).contiguous()
+        if self.token_ids is not None:
+            self.token_ids = self.token_ids.index_select(0, indices).contiguous()
+
+    def append_token_ids(self, token_ids: torch.Tensor, device: torch.device) -> None:
+        token_ids = token_ids.reshape(-1).to(device=device, dtype=torch.long)
+        if int(token_ids.numel()) == 0:
+            return
+        if self.token_ids is None:
+            current = int(self.importance.shape[0]) if self.importance is not None else 0
+            prefix = max(0, current - int(token_ids.numel()))
+            self.token_ids = torch.cat(
+                [
+                    torch.full((prefix,), -1, device=device, dtype=torch.long),
+                    token_ids,
+                ]
+            )
+            return
+        self.token_ids = self.token_ids.to(device=device, dtype=torch.long)
+        if self.importance is not None:
+            current = int(self.importance.shape[0])
+            if int(self.token_ids.shape[0]) < current:
+                pad = current - int(self.token_ids.shape[0])
+                self.token_ids = torch.cat(
+                    [self.token_ids, torch.full((pad,), -1, device=device, dtype=torch.long)]
+                )
+            fill = min(int(token_ids.numel()), current)
+            if fill > 0 and bool((self.token_ids[-fill:] < 0).all()):
+                self.token_ids[-fill:] = token_ids[-fill:]
+                return
+        self.token_ids = torch.cat([self.token_ids, token_ids])
+        if self.importance is not None and int(self.token_ids.shape[0]) > int(self.importance.shape[0]):
+            self.token_ids = self.token_ids[-int(self.importance.shape[0]) :].contiguous()
 
 
 def _cache_entries(past_key_values) -> list[tuple[torch.Tensor, torch.Tensor, object | None]]:
@@ -375,49 +417,67 @@ def compress_past_key_values(
 
     first_key = entries[0][0]
     old_summary = _layer_key_summary(first_key[:, :, :old_count])
-    hot_pool_indices = _select_hot_indices(
+    token_dedup_indices = _select_token_dedup_indices(
         old_count=old_count,
-        hot_budget=hot_budget,
+        budget=old_budget,
         hot_state=hot_state,
-        current_position=current_position,
-        attention_decay=attention_decay,
         device=first_key.device,
     )
-    hot_raw_indices = hot_pool_indices[:hot_raw_budget]
-    hot_cluster_source_indices = hot_pool_indices[hot_raw_budget:]
-    hot_cluster_selected = _select_hot_cluster_representatives(
-        old_summary=old_summary,
-        hot_source_indices=hot_cluster_source_indices,
-        budget=hot_cluster_budget,
-        merge_similarity=merge_similarity,
-    )
-    if int(hot_cluster_selected.numel()) > 0:
-        hot_selected_summary = old_summary.index_select(0, hot_cluster_selected)
-        hot_cluster_assignment = torch.argmax(
-            old_summary.index_select(0, hot_cluster_source_indices) @ hot_selected_summary.T,
-            dim=1,
-        ).to(torch.long)
+    if int(token_dedup_indices.numel()) > 0:
+        hot_raw_indices = token_dedup_indices[:hot_raw_budget]
+        hot_cluster_selected = token_dedup_indices[hot_raw_budget:hot_budget]
+        hot_cluster_source_indices = hot_cluster_selected
+        cold_selected = token_dedup_indices[hot_budget:]
+        cold_indices = cold_selected
+        hot_cluster_assignment = torch.arange(
+            int(hot_cluster_selected.numel()), device=first_key.device, dtype=torch.long
+        )
+        assignment = torch.arange(int(cold_selected.numel()), device=first_key.device, dtype=torch.long)
+        hot_pool_indices = token_dedup_indices[:hot_budget]
     else:
-        hot_cluster_assignment = torch.empty(0, device=first_key.device, dtype=torch.long)
+        hot_pool_indices = _select_hot_indices(
+            old_count=old_count,
+            hot_budget=hot_budget,
+            hot_state=hot_state,
+            current_position=current_position,
+            attention_decay=attention_decay,
+            device=first_key.device,
+        )
+        hot_raw_indices = hot_pool_indices[:hot_raw_budget]
+        hot_cluster_source_indices = hot_pool_indices[hot_raw_budget:]
+        hot_cluster_selected = _select_hot_cluster_representatives(
+            old_summary=old_summary,
+            hot_source_indices=hot_cluster_source_indices,
+            budget=hot_cluster_budget,
+            merge_similarity=merge_similarity,
+        )
+        if int(hot_cluster_selected.numel()) > 0:
+            hot_selected_summary = old_summary.index_select(0, hot_cluster_selected)
+            hot_cluster_assignment = torch.argmax(
+                old_summary.index_select(0, hot_cluster_source_indices) @ hot_selected_summary.T,
+                dim=1,
+            ).to(torch.long)
+        else:
+            hot_cluster_assignment = torch.empty(0, device=first_key.device, dtype=torch.long)
 
-    cold_mask = torch.ones(old_count, device=first_key.device, dtype=torch.bool)
-    if int(hot_pool_indices.numel()) > 0:
-        cold_mask[hot_pool_indices] = False
-    cold_indices = torch.nonzero(cold_mask, as_tuple=False).flatten()
-    cold_selected_relative = _select_old_representatives(
-        old_summary.index_select(0, cold_indices),
-        cold_budget,
-        merge_similarity,
-    )
-    cold_selected = cold_indices.index_select(0, cold_selected_relative)
-    if int(cold_selected.numel()) > 0:
-        selected_summary = old_summary.index_select(0, cold_selected)
-        assignment = torch.argmax(
-            old_summary.index_select(0, cold_indices) @ selected_summary.T,
-            dim=1,
-        ).to(torch.long)
-    else:
-        assignment = torch.empty(0, device=first_key.device, dtype=torch.long)
+        cold_mask = torch.ones(old_count, device=first_key.device, dtype=torch.bool)
+        if int(hot_pool_indices.numel()) > 0:
+            cold_mask[hot_pool_indices] = False
+        cold_indices = torch.nonzero(cold_mask, as_tuple=False).flatten()
+        cold_selected_relative = _select_old_representatives(
+            old_summary.index_select(0, cold_indices),
+            cold_budget,
+            merge_similarity,
+        )
+        cold_selected = cold_indices.index_select(0, cold_selected_relative)
+        if int(cold_selected.numel()) > 0:
+            selected_summary = old_summary.index_select(0, cold_selected)
+            assignment = torch.argmax(
+                old_summary.index_select(0, cold_indices) @ selected_summary.T,
+                dim=1,
+            ).to(torch.long)
+        else:
+            assignment = torch.empty(0, device=first_key.device, dtype=torch.long)
 
     compressed_layers = []
     hot_merged_tokens = max(
@@ -554,6 +614,31 @@ def _select_hot_indices(
     if take <= 0:
         return torch.empty(0, device=device, dtype=torch.long)
     return torch.topk(scores, k=take, largest=True).indices
+
+
+def _select_token_dedup_indices(
+    old_count: int,
+    budget: int,
+    hot_state: HotKVState | None,
+    device: torch.device,
+) -> torch.Tensor:
+    if old_count <= 0 or budget <= 0:
+        return torch.empty(0, device=device, dtype=torch.long)
+    if hot_state is None or hot_state.token_ids is None:
+        return torch.empty(0, device=device, dtype=torch.long)
+    token_ids = hot_state.token_ids[:old_count].to(device=device, dtype=torch.long)
+    if int(token_ids.numel()) < old_count:
+        return torch.empty(0, device=device, dtype=torch.long)
+    latest_by_token: dict[int, int] = {}
+    for idx, token_id in enumerate(token_ids.tolist()):
+        if token_id < 0:
+            continue
+        latest_by_token[int(token_id)] = idx
+    if not latest_by_token:
+        return torch.empty(0, device=device, dtype=torch.long)
+    selected = sorted(latest_by_token.values())
+    selected = selected[-min(budget, len(selected)) :]
+    return torch.tensor(selected, device=device, dtype=torch.long)
 
 
 def _select_hot_cluster_representatives(
@@ -999,6 +1084,8 @@ def generate_with_budgeted_kv_from_input_ids(
             query=_last_query_from_cache(past_key_values),
             update_strength=importance_update,
         )
+        entries = _cache_entries(past_key_values)
+        hot_state.append_token_ids(chunk[0], entries[0][0].device if entries else device)
         prefill_chunks_seen += 1
         should_compress = (
             prefill_chunks_seen % compress_every == 0
@@ -1094,6 +1181,11 @@ def generate_with_budgeted_kv_from_input_ids(
             past_key_values,
             query=_last_query_from_cache(past_key_values),
             update_strength=importance_update,
+        )
+        entries = _cache_entries(past_key_values)
+        hot_state.append_token_ids(
+            next_token.reshape(-1),
+            entries[0][0].device if entries else device,
         )
         decode_steps_seen += 1
         should_compress = (

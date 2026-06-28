@@ -499,6 +499,28 @@ def main() -> None:
                 "avg_kept_cache_tokens": (
                     f"{compression.avg_kept_tokens:.1f}" if compression is not None else ""
                 ),
+                "avg_hot_cache_tokens": (
+                    f"{compression.avg_hot_tokens:.1f}" if compression is not None else ""
+                ),
+                "avg_hot_raw_tokens": (
+                    f"{compression.avg_hot_raw_tokens:.1f}" if compression is not None else ""
+                ),
+                "avg_hot_cluster_tokens": (
+                    f"{compression.avg_hot_cluster_tokens:.1f}" if compression is not None else ""
+                ),
+                "avg_cold_cluster_tokens": (
+                    f"{compression.avg_cold_tokens:.1f}" if compression is not None else ""
+                ),
+                "prefill_chunk_tokens": str(args.prefill_chunk_tokens),
+                "compress_every": str(args.compress_every),
+                "max_cache_tokens": (
+                    str(args.max_cache_tokens) if mode == "kvmanage" else str(args.sliding_cache_tokens)
+                ),
+                "recent_window": (
+                    str(args.recent_window) if mode == "kvmanage" else str(args.sliding_cache_tokens)
+                ),
+                "hot_cache_tokens": str(args.hot_cache_tokens if mode == "kvmanage" else 0),
+                "hot_raw_tokens": str(args.hot_raw_tokens if mode == "kvmanage" else 0),
                 "dropped_tokens_total": (
                     str(compression.dropped_tokens) if compression is not None else ""
                 ),

@@ -33,7 +33,7 @@ KVManage 在缓存超过预算后执行近似压缩：
 | `run_batch_qa_eval.sh` | 速度/显存对比评测脚本，默认使用 8B AWQ |
 | `run_oom_eval.sh` | OOM 压力评测脚本，默认使用 Qwen3-32B-AWQ |
 | `run_kvmanage_vs_sliding_accuracy.sh` | KVManage 与 sliding window baseline 的准确率对比脚本 |
-| `run_qwen3_14b_awq_longmemeval_deepseek_compare.sh` | Qwen3-14B-AWQ，100k 输入，20k/40k KVManage 与 sliding window DeepSeek 对比脚本 |
+| `run_qwen3_14b_awq_longmemeval_deepseek_compare.sh` | Qwen3-14B-AWQ，100k 输入，KVManage 与 sliding window DeepSeek 对比脚本 |
 | `plot_oom_chart.py` | 根据 OOM 评测 CSV 绘制图表 |
 | `datasets/` | 评测数据集 |
 | `outputs/` | 示例结果和图表 |
@@ -182,8 +182,14 @@ LIMIT=1 JUDGE_LIMIT=4 ./run_qwen3_14b_awq_longmemeval_deepseek_compare.sh
 
 ```bash
 MAX_RETRIEVAL_TOKENS=100000
-KV_CACHE_TOKENS_LIST="20000 40000"
+KV_CACHE_TOKENS_LIST="20000"
 PREFILL_CHUNK_TOKENS=512
+```
+
+24GB 显存建议先只跑 20k；确认稳定后再显式加 40k：
+
+```bash
+KV_CACHE_TOKENS_LIST="20000 40000" ./run_qwen3_14b_awq_longmemeval_deepseek_compare.sh
 ```
 
 输出：

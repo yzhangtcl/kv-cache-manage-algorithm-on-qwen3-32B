@@ -25,6 +25,7 @@ ROPE_THETA="${ROPE_THETA:-1000000.0}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-${DEEPSEEK_JUDGE_MODEL:-deepseek-chat}}"
 JUDGE_LIMIT="${JUDGE_LIMIT:-0}"
 JUDGE_SLEEP_SEC="${JUDGE_SLEEP_SEC:-0}"
+LOG_EVERY="${LOG_EVERY:-0}"
 
 if [[ "$JUDGE_LIMIT" != "0" && -z "${DEEPSEEK_API_KEY:-}" ]]; then
   echo "DEEPSEEK_API_KEY is not set. Run: export DEEPSEEK_API_KEY=\"your_deepseek_api_key\"" >&2
@@ -92,6 +93,7 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
     --attention-decay "$ATTENTION_DECAY" \
     --importance-update "$IMPORTANCE_UPDATE" \
     --compress-every "$COMPRESS_EVERY" \
+    --log-every "$LOG_EVERY" \
     --rope-factor "$ROPE_FACTOR" \
     --rope-theta "$ROPE_THETA" \
     --resume \
@@ -122,6 +124,7 @@ for cache_tokens in $KV_CACHE_TOKENS_LIST; do
     --merge-similarity "$MERGE_SIMILARITY" \
     --attention-decay "$ATTENTION_DECAY" \
     --compress-every "$COMPRESS_EVERY" \
+    --log-every "$LOG_EVERY" \
     --rope-factor "$ROPE_FACTOR" \
     --rope-theta "$ROPE_THETA" \
     --resume \
