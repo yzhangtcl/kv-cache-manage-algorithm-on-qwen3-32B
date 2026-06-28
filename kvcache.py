@@ -26,6 +26,7 @@ class WordSpan:
 @dataclass(frozen=True)
 class PatternDedupResult:
     indices: torch.Tensor
+    redundant: torch.Tensor
     boost: torch.Tensor
 
 
@@ -442,64 +443,56 @@ def compress_past_key_values(
         current_position=current_position,
         attention_decay=attention_decay,
     )
-    if pattern_dedup is not None and int(pattern_dedup.indices.numel()) > 0:
-        pattern_indices = pattern_dedup.indices
+    dedup_exclude_mask = torch.zeros(old_count, device=first_key.device, dtype=torch.bool)
+    if pattern_dedup is not None:
+        dedup_exclude_mask = pattern_dedup.redundant
         if hot_state is not None and hot_state.importance is not None:
             hot_state.importance[:old_count] = hot_state.importance[:old_count] + pattern_dedup.boost
-        hot_raw_indices = pattern_indices[:hot_raw_budget]
-        hot_cluster_selected = pattern_indices[hot_raw_budget:hot_budget]
-        hot_cluster_source_indices = hot_cluster_selected
-        cold_selected = pattern_indices[hot_budget:]
-        cold_indices = cold_selected
-        hot_cluster_assignment = torch.arange(
-            int(hot_cluster_selected.numel()), device=first_key.device, dtype=torch.long
-        )
-        assignment = torch.arange(int(cold_selected.numel()), device=first_key.device, dtype=torch.long)
-        hot_pool_indices = pattern_indices[:hot_budget]
-    else:
-        hot_pool_indices = _select_hot_indices(
-            old_count=old_count,
-            hot_budget=hot_budget,
-            hot_state=hot_state,
-            current_position=current_position,
-            attention_decay=attention_decay,
-            device=first_key.device,
-        )
-        hot_raw_indices = hot_pool_indices[:hot_raw_budget]
-        hot_cluster_source_indices = hot_pool_indices[hot_raw_budget:]
-        hot_cluster_selected = _select_hot_cluster_representatives(
-            old_summary=old_summary,
-            hot_source_indices=hot_cluster_source_indices,
-            budget=hot_cluster_budget,
-            merge_similarity=merge_similarity,
-        )
-        if int(hot_cluster_selected.numel()) > 0:
-            hot_selected_summary = old_summary.index_select(0, hot_cluster_selected)
-            hot_cluster_assignment = torch.argmax(
-                old_summary.index_select(0, hot_cluster_source_indices) @ hot_selected_summary.T,
-                dim=1,
-            ).to(torch.long)
-        else:
-            hot_cluster_assignment = torch.empty(0, device=first_key.device, dtype=torch.long)
 
-        cold_mask = torch.ones(old_count, device=first_key.device, dtype=torch.bool)
-        if int(hot_pool_indices.numel()) > 0:
-            cold_mask[hot_pool_indices] = False
-        cold_indices = torch.nonzero(cold_mask, as_tuple=False).flatten()
-        cold_selected_relative = _select_old_representatives(
-            old_summary.index_select(0, cold_indices),
-            cold_budget,
-            merge_similarity,
-        )
-        cold_selected = cold_indices.index_select(0, cold_selected_relative)
-        if int(cold_selected.numel()) > 0:
-            selected_summary = old_summary.index_select(0, cold_selected)
-            assignment = torch.argmax(
-                old_summary.index_select(0, cold_indices) @ selected_summary.T,
-                dim=1,
-            ).to(torch.long)
-        else:
-            assignment = torch.empty(0, device=first_key.device, dtype=torch.long)
+    hot_pool_indices = _select_hot_indices(
+        old_count=old_count,
+        hot_budget=hot_budget,
+        hot_state=hot_state,
+        current_position=current_position,
+        attention_decay=attention_decay,
+        device=first_key.device,
+        exclude_mask=dedup_exclude_mask,
+    )
+    hot_raw_indices = hot_pool_indices[:hot_raw_budget]
+    hot_cluster_source_indices = hot_pool_indices[hot_raw_budget:]
+    hot_cluster_selected = _select_hot_cluster_representatives(
+        old_summary=old_summary,
+        hot_source_indices=hot_cluster_source_indices,
+        budget=hot_cluster_budget,
+        merge_similarity=merge_similarity,
+    )
+    if int(hot_cluster_selected.numel()) > 0:
+        hot_selected_summary = old_summary.index_select(0, hot_cluster_selected)
+        hot_cluster_assignment = torch.argmax(
+            old_summary.index_select(0, hot_cluster_source_indices) @ hot_selected_summary.T,
+            dim=1,
+        ).to(torch.long)
+    else:
+        hot_cluster_assignment = torch.empty(0, device=first_key.device, dtype=torch.long)
+
+    cold_mask = ~dedup_exclude_mask
+    if int(hot_pool_indices.numel()) > 0:
+        cold_mask[hot_pool_indices] = False
+    cold_indices = torch.nonzero(cold_mask, as_tuple=False).flatten()
+    cold_selected_relative = _select_old_representatives(
+        old_summary.index_select(0, cold_indices),
+        cold_budget,
+        merge_similarity,
+    )
+    cold_selected = cold_indices.index_select(0, cold_selected_relative)
+    if int(cold_selected.numel()) > 0:
+        selected_summary = old_summary.index_select(0, cold_selected)
+        assignment = torch.argmax(
+            old_summary.index_select(0, cold_indices) @ selected_summary.T,
+            dim=1,
+        ).to(torch.long)
+    else:
+        assignment = torch.empty(0, device=first_key.device, dtype=torch.long)
 
     compressed_layers = []
     hot_merged_tokens = max(
@@ -621,20 +614,34 @@ def _select_hot_indices(
     current_position: int | None,
     attention_decay: float,
     device: torch.device,
+    exclude_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if old_count <= 0 or hot_budget <= 0:
         return torch.empty(0, device=device, dtype=torch.long)
+    if exclude_mask is None:
+        eligible = torch.ones(old_count, device=device, dtype=torch.bool)
+    else:
+        eligible = ~exclude_mask.to(device=device, dtype=torch.bool)[:old_count]
+    eligible_count = int(eligible.sum().item())
+    if eligible_count <= 0:
+        return torch.empty(0, device=device, dtype=torch.long)
     if hot_state is None or hot_state.importance is None or hot_state.token_positions is None:
-        return torch.arange(max(0, old_count - hot_budget), old_count, device=device, dtype=torch.long)
+        eligible_indices = torch.nonzero(eligible, as_tuple=False).flatten()
+        return eligible_indices[-min(hot_budget, eligible_count):]
     importance = hot_state.importance[:old_count].to(device=device, dtype=torch.float32)
     positions = hot_state.token_positions[:old_count].to(device=device)
     if current_position is None:
         current_position = int(positions[-1].item()) + 1 if int(positions.numel()) else old_count
     age = torch.clamp(torch.tensor(current_position, device=device) - positions, min=0).float()
-    scores = importance * torch.pow(torch.tensor(attention_decay, device=device), age)
-    take = min(hot_budget, old_count)
+    recency = torch.pow(torch.tensor(attention_decay, device=device), age)
+    scores = importance * recency + recency * 1e-6
+    scores = scores.masked_fill(~eligible, -float("inf"))
+    take = min(hot_budget, eligible_count)
     if take <= 0:
         return torch.empty(0, device=device, dtype=torch.long)
+    if not bool(torch.isfinite(scores).any()) or float(torch.max(scores[eligible]).item()) <= 0.0:
+        eligible_indices = torch.nonzero(eligible, as_tuple=False).flatten()
+        return eligible_indices[-take:]
     return torch.topk(scores, k=take, largest=True).indices
 
 
@@ -702,6 +709,7 @@ def _select_word_pattern_dedup_indices(
     if repeated_pattern_count == 0:
         return None
 
+    redundant = redundant & ~representative
     keep_mask = ~redundant | representative
     selected = torch.nonzero(keep_mask, as_tuple=False).flatten()
     if int(selected.numel()) == 0:
@@ -717,7 +725,7 @@ def _select_word_pattern_dedup_indices(
             device=device,
         )
     selected, _ = torch.sort(selected)
-    return PatternDedupResult(indices=selected, boost=boost)
+    return PatternDedupResult(indices=selected, redundant=redundant, boost=boost)
 
 
 def _trim_pattern_selection_to_budget(
